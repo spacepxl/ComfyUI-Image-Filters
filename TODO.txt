@@ -1,3 +1,0 @@
-guided filter for seg/mask
-bilateral filter image
-deconvolution?
