@@ -10,8 +10,18 @@ Increase or decrease details in an image or batch of images using a guided filte
 
 ![enhance](https://github.com/spacepxl/ComfyUI-Image-Filters/blob/main/enhance_detail.png)
 
+## Guided Filter Alpha
+
+Use a guided filter to feather edges of a mask based on RGB colors. Works best with a strong color separation between FG and BG.
+
+![guidedfilteralpha](https://github.com/spacepxl/ComfyUI-Image-Filters/blob/main/guided_filter_alpha.png)
+
+## Remap Range
+
+Fits the color range of an image to a new blackpoint and whitepoint (clamped). Useful for clamping or thresholding soft masks.
+
 ## TODO:
-- guided filter for seg/mask
+- alpha clean
 - bilateral filter image for single frame denoise
 - temporal bilateral filter for video denoise
 - deconvolution
