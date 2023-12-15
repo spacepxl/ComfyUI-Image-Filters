@@ -15,7 +15,7 @@ class AlphaClean:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE",),
+                "images": ("IMAGE",),
                 "radius": ("INT", {
                     "default": 8,
                     "min": 1,
@@ -48,18 +48,17 @@ class AlphaClean:
 
     CATEGORY = "image/filters"
 
-    def alpha_clean(self, image: torch.Tensor, radius: int, fill_holes: int, white_threshold: float, extra_clip: float):
+    def alpha_clean(self, images: torch.Tensor, radius: int, fill_holes: int, white_threshold: float, extra_clip: float):
         
         d = radius * 2 + 1
-        i_dup = copy.deepcopy(image.cpu().numpy())
+        i_dup = copy.deepcopy(images.cpu().numpy())
         
-        for i in range(len(i_dup)):
-            work_img = i_dup[i]
+        for index, image in enumerate(i_dup):
             
-            cleaned = cv2.bilateralFilter(work_img, 9, 0.05, 8)
+            cleaned = cv2.bilateralFilter(image, 9, 0.05, 8)
             
-            alpha = np.clip((work_img - white_threshold) / (1 - white_threshold), 0, 1)
-            rgb = work_img * alpha
+            alpha = np.clip((image - white_threshold) / (1 - white_threshold), 0, 1)
+            rgb = image * alpha
             
             alpha = cv2.GaussianBlur(alpha, (d,d), 0) * 0.99 + np.average(alpha) * 0.01
             rgb = cv2.GaussianBlur(rgb, (d,d), 0) * 0.99 + np.average(rgb) * 0.01
@@ -79,9 +78,144 @@ class AlphaClean:
                 gamma = cv2.GaussianBlur(gamma, (fD, fD), 0)
                 cleaned = np.maximum(cleaned, gamma)
 
-            i_dup[i] = cleaned
+            i_dup[index] = cleaned
         
         return (torch.from_numpy(i_dup),)
+
+class BlurImageFast:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "radius_x": ("INT", {
+                    "default": 1,
+                    "min": 0,
+                    "max": 1023,
+                    "step": 1
+                }),
+                "radius_y": ("INT", {
+                    "default": 1,
+                    "min": 0,
+                    "max": 1023,
+                    "step": 1
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "blur_image"
+
+    CATEGORY = "image/filters"
+
+    def blur_image(self, images, radius_x, radius_y):
+        
+        if radius_x + radius_y == 0:
+            return (images,)
+        
+        dx = radius_x * 2 + 1
+        dy = radius_y * 2 + 1
+        
+        dup = copy.deepcopy(images.cpu().numpy())
+        
+        for index, image in enumerate(dup):
+            dup[index] = cv2.GaussianBlur(image, (dx, dy), 0)
+        
+        return (torch.from_numpy(dup),)
+
+class BlurMaskFast:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "masks": ("MASK",),
+                "radius_x": ("INT", {
+                    "default": 1,
+                    "min": 0,
+                    "max": 1023,
+                    "step": 1
+                }),
+                "radius_y": ("INT", {
+                    "default": 1,
+                    "min": 0,
+                    "max": 1023,
+                    "step": 1
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "blur_mask"
+
+    CATEGORY = "mask/filters"
+
+    def blur_mask(self, masks, radius_x, radius_y):
+        
+        if radius_x + radius_y == 0:
+            return (masks,)
+        
+        dx = radius_x * 2 + 1
+        dy = radius_y * 2 + 1
+        
+        dup = copy.deepcopy(masks.cpu().numpy())
+        
+        for index, mask in enumerate(dup):
+            dup[index] = cv2.GaussianBlur(mask, (dx, dy), 0)
+        
+        return (torch.from_numpy(dup),)
+
+class DilateErodeMask:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "masks": ("MASK",),
+                "radius": ("INT", {
+                    "default": 0,
+                    "min": -1023,
+                    "max": 1023,
+                    "step": 1
+                }),
+                "shape": (["box", "circle"],),
+            },
+        }
+
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "dilate_mask"
+
+    CATEGORY = "mask/filters"
+
+    def dilate_mask(self, masks, radius, shape):
+        
+        if radius == 0:
+            return (masks,)
+        
+        s = abs(radius)
+        d = s * 2 + 1
+        k = np.zeros((d, d), np.uint8)
+        if shape == "circle":
+            k = cv2.circle(k, (s,s), s, 1, -1)
+        else:
+            k += 1
+        
+        dup = copy.deepcopy(masks.cpu().numpy())
+        
+        for index, mask in enumerate(dup):
+            if radius > 0:
+                dup[index] = cv2.dilate(mask, k, iterations=1)
+            else:
+                dup[index] = cv2.erode(mask, k, iterations=1)
+        
+        return (torch.from_numpy(dup),)
 
 class EnhanceDetail:
     def __init__(self):
@@ -135,16 +269,15 @@ class EnhanceDetail:
         
         dup = copy.deepcopy(images.cpu().numpy())
         
-        for i in range(len(dup)):
-            image = dup[i]
+        for index, image in enumerate(dup):
             imgB = image
             if denoise>0.0:
                 imgB = cv2.bilateralFilter(image, d, n, d)
             
-            imgG = guidedFilter(image, image, d, s)
+            imgG = np.clip(guidedFilter(image, image, d, s), 0.001, 1)
             
             details = (imgB/imgG - 1) * detail_mult + 1
-            dup[i] = details*imgG - imgB + image
+            dup[index] = np.clip(details*imgG - imgB + image, 0, 1)
         
         return (torch.from_numpy(dup),)
 
@@ -156,7 +289,7 @@ class GuidedFilterAlpha:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "image": ("IMAGE",),
+                "images": ("IMAGE",),
                 "alpha": ("IMAGE",),
                 "filter_radius": ("INT", {
                     "default": 8,
@@ -178,18 +311,17 @@ class GuidedFilterAlpha:
 
     CATEGORY = "image/filters"
 
-    def guided_filter_alpha(self, image: torch.Tensor, alpha: torch.Tensor, filter_radius: int, sigma: float):
+    def guided_filter_alpha(self, images: torch.Tensor, alpha: torch.Tensor, filter_radius: int, sigma: float):
         
         d = filter_radius * 2 + 1
         s = sigma / 10
         
-        i_dup = copy.deepcopy(image.cpu().numpy())
+        i_dup = copy.deepcopy(images.cpu().numpy())
         a_dup = copy.deepcopy(alpha.cpu().numpy())
         
-        for i in range(len(i_dup)):
-            image_work = i_dup[i]
-            alpha_work = a_dup[i]
-            i_dup[i] = guidedFilter(image_work, alpha_work, d, s)
+        for index, image in enumerate(i_dup):
+            alpha_work = a_dup[index]
+            i_dup[index] = guidedFilter(image, alpha_work, d, s)
         
         return (torch.from_numpy(i_dup),)
 
@@ -235,6 +367,9 @@ class RemapRange:
 
 NODE_CLASS_MAPPINGS = {
     "AlphaClean": AlphaClean,
+    "BlurImageFast": BlurImageFast,
+    "BlurMaskFast": BlurMaskFast,
+    "DilateErodeMask": DilateErodeMask,
     "EnhanceDetail": EnhanceDetail,
     "GuidedFilterAlpha": GuidedFilterAlpha,
     "RemapRange": RemapRange,
@@ -242,6 +377,9 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AlphaClean": "Alpha Clean",
+    "BlurImageFast": "Blur Image (Fast)",
+    "BlurMaskFast": "Blur Mask (Fast)",
+    "DilateErodeMask": "Dilate/Erode Mask",
     "EnhanceDetail": "Enhance Detail",
     "GuidedFilterAlpha": "Guided Filter Alpha",
     "RemapRange": "Remap Range",
