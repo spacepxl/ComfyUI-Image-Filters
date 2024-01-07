@@ -1,8 +1,8 @@
-import torch
 import os
 import sys
 import copy
-
+import torch
+import torchvision.transforms
 import numpy as np
 import cv2
 from cv2.ximgproc import guidedFilter
@@ -439,6 +439,197 @@ class RemapRange:
         
         return (torch.from_numpy(i_dup),)
 
+class ClampOutliers:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents": ("LATENT", ),
+                "std_dev": ("FLOAT", {"default": 3.0, "min": 0.1, "max": 8.0, "step": 0.1,  "round": 0.1}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "clamp_outliers"
+
+    CATEGORY = "latent/filters"
+
+    def clamp_outliers(self, latents, std_dev):
+        latents_copy = copy.deepcopy(latents)
+        t = latents_copy["samples"]
+        
+        for i, latent in enumerate(t):
+            for j, channel in enumerate(latent):
+                sd = torch.std(channel, dim=None).numpy()
+                t[i,j] = torch.clamp(channel, min = -sd * std_dev, max = sd * std_dev)
+        
+        latents_copy["samples"] = t
+        return (latents_copy,)
+
+class AdainLatent:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents": ("LATENT", ),
+                "reference": ("LATENT", ),
+                "factor": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01,  "round": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "batch_normalize"
+
+    CATEGORY = "latent/filters"
+
+    def batch_normalize(self, latents, reference, factor):
+        latents_copy = copy.deepcopy(latents)
+        t = latents_copy["samples"] # [B x C x H x W]
+        
+        t = t.movedim(0,1) # [C x B x H x W]
+        for c in range(t.size(0)):
+            for i in range(t.size(1)):
+                r_sd, r_mean = torch.std_mean(reference["samples"][i, c], dim=None) # index by original dim order
+                i_sd, i_mean = torch.std_mean(t[c, i], dim=None)
+                
+                t[c, i] = ((t[c, i] - i_mean) / i_sd) * r_sd + r_mean
+        
+        latents_copy["samples"] = torch.lerp(latents["samples"], t.movedim(1,0), factor) # [B x C x H x W]
+        return (latents_copy,)
+
+class AdainImage:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE", ),
+                "reference": ("IMAGE", ),
+                "factor": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01,  "round": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "batch_normalize"
+
+    CATEGORY = "image/filters"
+
+    def batch_normalize(self, images, reference, factor):
+        t = copy.deepcopy(images) # [B x H x W x C]
+        
+        t = t.movedim(-1,0) # [C x B x H x W]
+        for c in range(t.size(0)):
+            for i in range(t.size(1)):
+                r_sd, r_mean = torch.std_mean(reference[i, :, :, c], dim=None) # index by original dim order
+                i_sd, i_mean = torch.std_mean(t[c, i], dim=None)
+                
+                t[c, i] = ((t[c, i] - i_mean) / i_sd) * r_sd + r_mean
+        
+        t = torch.lerp(images, t.movedim(0,-1), factor) # [B x H x W x C]
+        return (t,)
+
+class BatchNormalizeLatent:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents": ("LATENT", ),
+                "factor": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01,  "round": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "batch_normalize"
+
+    CATEGORY = "latent/filters"
+
+    def batch_normalize(self, latents, factor):
+        latents_copy = copy.deepcopy(latents)
+        t = latents_copy["samples"] # [B x C x H x W]
+        
+        t = t.movedim(0,1) # [C x B x H x W]
+        for c in range(t.size(0)):
+            c_sd, c_mean = torch.std_mean(t[c], dim=None)
+            
+            for i in range(t.size(1)):
+                i_sd, i_mean = torch.std_mean(t[c, i], dim=None)
+                
+                t[c, i] = (t[c, i] - i_mean) / i_sd
+            
+            t[c] = t[c] * c_sd + c_mean
+        
+        latents_copy["samples"] = torch.lerp(latents["samples"], t.movedim(1,0), factor) # [B x C x H x W]
+        return (latents_copy,)
+
+class BatchNormalizeImage:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE", ),
+                "factor": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01,  "round": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "batch_normalize"
+
+    CATEGORY = "image/filters"
+
+    def batch_normalize(self, images, factor):
+        t = copy.deepcopy(images) # [B x H x W x C]
+        
+        t = t.movedim(-1,0) # [C x B x H x W]
+        for c in range(t.size(0)):
+            c_sd, c_mean = torch.std_mean(t[c], dim=None)
+            
+            for i in range(t.size(1)):
+                i_sd, i_mean = torch.std_mean(t[c, i], dim=None)
+                
+                t[c, i] = (t[c, i] - i_mean) / i_sd
+            
+            t[c] = t[c] * c_sd + c_mean
+        
+        t = torch.lerp(images, t.movedim(0,-1), factor) # [B x H x W x C]
+        return (t,)
+
+class DifferenceChecker:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images1": ("IMAGE", ),
+                "images2": ("IMAGE", ),
+                "multiplier": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 1000.0, "step": 0.01,  "round": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "difference_checker"
+
+    CATEGORY = "image/filters"
+
+    def difference_checker(self, images1, images2, multiplier):
+        t = copy.deepcopy(images1)
+        t = torch.abs(images1 - images2) * multiplier
+        return (torch.clamp(t, min=0, max=1),)
 
 NODE_CLASS_MAPPINGS = {
     "AlphaClean": AlphaClean,
@@ -449,6 +640,12 @@ NODE_CLASS_MAPPINGS = {
     "EnhanceDetail": EnhanceDetail,
     "GuidedFilterAlpha": GuidedFilterAlpha,
     "RemapRange": RemapRange,
+    "ClampOutliers": ClampOutliers,
+    "AdainLatent": AdainLatent,
+    "AdainImage": AdainImage,
+    "BatchNormalizeLatent": BatchNormalizeLatent,
+    "BatchNormalizeImage": BatchNormalizeImage,
+    "DifferenceChecker": DifferenceChecker,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -460,4 +657,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "EnhanceDetail": "Enhance Detail",
     "GuidedFilterAlpha": "Guided Filter Alpha",
     "RemapRange": "Remap Range",
+    "ClampOutliers": "Clamp Outliers",
+    "AdainLatent": "AdaIN (Latent)",
+    "AdainImage": "AdaIN (Image)",
+    "BatchNormalizeLatent": "Batch Normalize (Latent)",
+    "BatchNormalizeImage": "Batch Normalize (Image)",
+    "DifferenceChecker": "Difference Checker",
 }
