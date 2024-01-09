@@ -448,7 +448,7 @@ class ClampOutliers:
         return {
             "required": {
                 "latents": ("LATENT", ),
-                "std_dev": ("FLOAT", {"default": 3.0, "min": 0.1, "max": 8.0, "step": 0.1,  "round": 0.1}),
+                "std_dev": ("FLOAT", {"default": 3.0, "min": 0.1, "max": 100.0, "step": 0.1,  "round": 0.1}),
             },
         }
 
@@ -463,8 +463,8 @@ class ClampOutliers:
         
         for i, latent in enumerate(t):
             for j, channel in enumerate(latent):
-                sd = torch.std(channel, dim=None).numpy()
-                t[i,j] = torch.clamp(channel, min = -sd * std_dev, max = sd * std_dev)
+                sd, mean = torch.std_mean(channel, dim=None)
+                t[i,j] = torch.clamp(channel, min = -sd * std_dev + mean, max = sd * std_dev + mean)
         
         latents_copy["samples"] = t
         return (latents_copy,)
