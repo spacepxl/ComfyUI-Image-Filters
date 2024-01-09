@@ -3,6 +3,7 @@
 Image and matte filtering nodes for ComfyUI
 
 ```
+latent/filters/*
 image/filters/*
 mask/filters/*
 ```
@@ -49,7 +50,23 @@ Use a guided filter to feather edges of a matte based on similar RGB colors. Wor
 
 Fits the color range of an image to a new blackpoint and whitepoint (clamped). Useful for clamping or thresholding soft mattes.
 
+### Clamp Outliers
+
+Clamps latents that are more than n standard deviations away from 0. Could help with fireflies or stray noise that disrupt the VAE decode.
+
+### AdaIN Latent/Image
+
+Normalizes latents/images to the mean and std dev of a reference input. Useful for getting rid of color shift from high denoise strength, or matching color to a reference in general.
+
+### Batch Normalize Latent/Image
+
+Normalizes each frame in a batch to the overall mean and std dev, good for removing overall brightness flickering.
+
+### Difference Checker
+
+Absolute value of the difference between inputs, with a multiplier to boost dark values for easier viewing. Alternative to the vanilla merge difference node, which is only a subtraction without the abs()
+
 ## TODO:
 - bilateral filter image for single frame denoise
-- temporal bilateral filter for video denoise
+- temporal filters for video denoise
 - deconvolution
