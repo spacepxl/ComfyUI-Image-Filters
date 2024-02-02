@@ -12,6 +12,9 @@ try:
 except ImportError:
     print("\033[33mUnable to import guidedFilter, make sure you have only opencv-contrib-python or run the import_error_install.bat script\033[m")
 
+import comfy.model_management
+
+MAX_RESOLUTION=8192
 
 class AlphaClean:
     def __init__(self):
@@ -635,6 +638,100 @@ class DifferenceChecker:
         t = torch.abs(images1 - images2) * multiplier
         return (torch.clamp(t, min=0, max=1),)
 
+class ImageConstant:
+    def __init__(self, device="cpu"):
+        self.device = device
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                              "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+                              "color": ("COLOR",),
+                              }}
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "generate"
+
+    CATEGORY = "image"
+
+    def generate(self, width, height, batch_size, color):
+        # rgb = color.lstrip('#')
+        rgb = tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+        
+        r = torch.full([batch_size, height, width, 1], rgb[0]/255)
+        g = torch.full([batch_size, height, width, 1], rgb[1]/255)
+        b = torch.full([batch_size, height, width, 1], rgb[2]/255)
+        return (torch.cat((r, g, b), dim=-1), )
+
+class OffsetLatentImage:
+    def __init__(self):
+        self.device = comfy.model_management.intermediate_device()
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "width": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8}),
+                              "height": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8}),
+                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+                              "offset_0": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
+                              "offset_1": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
+                              "offset_2": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
+                              "offset_3": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
+                              }}
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "generate"
+
+    CATEGORY = "latent"
+
+    def generate(self, width, height, batch_size, offset_0, offset_1, offset_2, offset_3):
+        latent = torch.zeros([batch_size, 4, height // 8, width // 8], device=self.device)
+        latent[:,0,:,:] = offset_0
+        latent[:,1,:,:] = offset_1
+        latent[:,2,:,:] = offset_2
+        latent[:,3,:,:] = offset_3
+        return ({"samples":latent}, )
+
+class LatentStats:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"latent": ("LATENT", ),}}
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("stats",)
+    FUNCTION = "notify"
+    OUTPUT_NODE = True
+
+    CATEGORY = "utils"
+
+    def notify(self, latent):
+        latents = latent["samples"]
+        width, height = latents.size(3), latents.size(2)
+        
+        text = ["",]
+        text[0] = f"batch size: {latents.size(0)}"
+        text.append(f"width: {width} ({width * 8})")
+        text.append(f"height: {height} ({height * 8})")
+        
+        for i in range(4):
+            minimum = torch.min(latents[:,i,:,:]).item()
+            maximum = torch.max(latents[:,i,:,:]).item()
+            std_dev, mean = torch.std_mean(latents[:,i,:,:], dim=None)
+            
+            text.append(f"c{i} mean: {mean:.1f} std_dev: {std_dev:.1f} min: {minimum:.1f} max: {maximum:.1f}")
+        
+        
+        printtext = "\033[36mLatent Stats:\033[m"
+        for t in text:
+            printtext += "\n    " + t
+        
+        returntext = ""
+        for i in range(len(text)):
+            if i > 0:
+                returntext += "\n"
+            returntext += text[i]
+        
+        print(printtext)
+        return (returntext,)
+
 NODE_CLASS_MAPPINGS = {
     "AlphaClean": AlphaClean,
     "AlphaMatte": AlphaMatte,
@@ -650,6 +747,9 @@ NODE_CLASS_MAPPINGS = {
     "BatchNormalizeLatent": BatchNormalizeLatent,
     "BatchNormalizeImage": BatchNormalizeImage,
     "DifferenceChecker": DifferenceChecker,
+    "ImageConstant": ImageConstant,
+    "OffsetLatentImage": OffsetLatentImage,
+    "LatentStats": LatentStats,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -667,4 +767,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BatchNormalizeLatent": "Batch Normalize (Latent)",
     "BatchNormalizeImage": "Batch Normalize (Image)",
     "DifferenceChecker": "Difference Checker",
+    "ImageConstant": "Image Constant Color (RGB)",
+    "OffsetLatentImage": "Offset Latent Image",
+    "LatentStats": "Latent Stats",
 }
