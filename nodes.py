@@ -5,8 +5,12 @@ import torch
 import torchvision.transforms
 import numpy as np
 import cv2
-from cv2.ximgproc import guidedFilter
 from pymatting import *
+
+try:
+    from cv2.ximgproc import guidedFilter
+except ImportError:
+    print("\033[33mUnable to import guidedFilter, make sure you have only opencv-contrib-python or run the import_error_install.bat script\033[m")
 
 
 class AlphaClean:
