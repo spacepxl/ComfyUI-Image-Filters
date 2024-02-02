@@ -66,6 +66,18 @@ Normalizes each frame in a batch to the overall mean and std dev, good for remov
 
 Absolute value of the difference between inputs, with a multiplier to boost dark values for easier viewing. Alternative to the vanilla merge difference node, which is only a subtraction without the abs()
 
+### Image Constant
+
+Creates an empty image of any color, with a color picker UI.
+
+### Offset Latent Image
+
+Creates an empty latent image with custom values, for offset noise but with per-channel control.
+
+### Latent Stats
+
+Prints some stats about the latents (dimensions, and per-channel mean, std dev, min, and max)
+
 ## TODO:
 - bilateral filter image for single frame denoise
 - temporal filters for video denoise
