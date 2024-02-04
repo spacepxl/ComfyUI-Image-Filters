@@ -732,6 +732,125 @@ class LatentStats:
         print(printtext)
         return (returntext,)
 
+def sRGBtoLinear(npArray):
+    less = npArray <= 0.0404482362771082
+    npArray[less] = npArray[less] / 12.92
+    npArray[~less] = np.power((npArray[~less] + 0.055) / 1.055, 2.4)
+
+def linearToSRGB(npArray):
+    less = npArray <= 0.0031308
+    npArray[less] = npArray[less] * 12.92
+    npArray[~less] = np.power(npArray[~less], 1/2.4) * 1.055 - 0.055
+
+def linearToTonemap(npArray):
+    more = npArray > 0.06
+    SLog3 = np.clip((np.log10((npArray + 0.01)/0.19) * 261.5 + 420) / 1023, 0, 1)
+    npArray[more] = np.power(1 / (1 + (1 / np.power(SLog3[more] / (1 - SLog3[more]), 1.7))), 1.7)
+
+def tonemapToLinear(npArray):
+    more = npArray > 0.06
+    x = np.power(np.clip(npArray, 0, 1), 1/1.7)
+    ut = 1 / (1 + np.power((-1 / x) * (x - 1), 1/1.7))
+    npArray[more] = np.power(10, (ut[more] * 1023 - 420)/261.5) * 0.19 - 0.01
+
+class Tonemap:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "input_mode": (["linear", "sRGB"],),
+                "output_mode": (["sRGB", "linear"],),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "apply"
+
+    CATEGORY = "image/filters"
+
+    def apply(self, images, input_mode, output_mode):
+        t = images.detach().clone().cpu().numpy().astype(np.float32)
+        
+        if input_mode == "sRGB":
+            sRGBtoLinear(t[:,:,:,:3])
+        
+        linearToTonemap(t[:,:,:,:3])
+        
+        if output_mode == "sRGB":
+            linearToSRGB(t[:,:,:,:3])
+            t = np.clip(t, 0, 1)
+        
+        t = torch.from_numpy(t)
+        return (t,)
+
+class UnTonemap:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "input_mode": (["sRGB", "linear"],),
+                "output_mode": (["linear", "sRGB"],),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "apply"
+
+    CATEGORY = "image/filters"
+
+    def apply(self, images, input_mode, output_mode):
+        t = images.detach().clone().cpu().numpy().astype(np.float32)
+        
+        if input_mode == "sRGB":
+            sRGBtoLinear(t[:,:,:,:3])
+        
+        tonemapToLinear(t[:,:,:,:3])
+        
+        if output_mode == "sRGB":
+            linearToSRGB(t[:,:,:,:3])
+            t = np.clip(t, 0, 1)
+        
+        t = torch.from_numpy(t)
+        return (t,)
+
+def exposure(npArray, stops):
+    more = npArray > 0
+    npArray[more] *= pow(2, stops)
+
+class ExposureAdjust:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "stops": ("FLOAT", {"default": 0.0, "min": -100, "max": 100, "step": 0.01}),
+                "input_mode": (["sRGB", "linear"],),
+                "output_mode": (["sRGB", "linear"],),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "apply"
+
+    CATEGORY = "image/filters"
+
+    def apply(self, images, stops, input_mode, output_mode):
+        t = images.detach().clone().cpu().numpy().astype(np.float32)
+        
+        if input_mode == "sRGB":
+            sRGBtoLinear(t[:,:,:,:3])
+        
+        exposure(t[:,:,:,:3], stops)
+        
+        if output_mode == "sRGB":
+            linearToSRGB(t[:,:,:,:3])
+            t = np.clip(t, 0, 1)
+        
+        t = torch.from_numpy(t)
+        return (t,)
+
 NODE_CLASS_MAPPINGS = {
     "AlphaClean": AlphaClean,
     "AlphaMatte": AlphaMatte,
@@ -750,6 +869,9 @@ NODE_CLASS_MAPPINGS = {
     "ImageConstant": ImageConstant,
     "OffsetLatentImage": OffsetLatentImage,
     "LatentStats": LatentStats,
+    "Tonemap": Tonemap,
+    "UnTonemap": UnTonemap,
+    "ExposureAdjust": ExposureAdjust,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -770,4 +892,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ImageConstant": "Image Constant Color (RGB)",
     "OffsetLatentImage": "Offset Latent Image",
     "LatentStats": "Latent Stats",
+    "Tonemap": "Tonemap",
+    "UnTonemap": "UnTonemap",
+    "ExposureAdjust": "Exposure Adjust",
 }
