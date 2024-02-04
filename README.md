@@ -78,6 +78,38 @@ Creates an empty latent image with custom values, for offset noise but with per-
 
 Prints some stats about the latents (dimensions, and per-channel mean, std dev, min, and max)
 
+### Tonemap / UnTonemap
+
+Apply or remove a log + contrast curve tonemap
+
+Apply tonemap:
+```
+power = 1.7
+SLog3R = clamp((log10((r + 0.01)/0.19) * 261.5 + 420) / 1023, 0, 1)
+SLog3G = clamp((log10((g + 0.01)/0.19) * 261.5 + 420) / 1023, 0, 1)
+SLog3B = clamp((log10((b + 0.01)/0.19) * 261.5 + 420) / 1023, 0, 1)
+
+r = r > 0.06 ? pow(1 / (1 + (1 / pow(SLog3R / (1 - SLog3R), power))), power) : r
+g = g > 0.06 ? pow(1 / (1 + (1 / pow(SLog3G / (1 - SLog3G), power))), power) : g
+b = b > 0.06 ? pow(1 / (1 + (1 / pow(SLog3B / (1 - SLog3B), power))), power) : b
+```
+
+Remove tonemap:
+```
+power = 1.7
+SR = 1 / (1 + pow((-1/pow(r, 1/power)) * (pow(r, 1/power) - 1), 1/power))
+SG = 1 / (1 + pow((-1/pow(g, 1/power)) * (pow(g, 1/power) - 1), 1/power))
+SB = 1 / (1 + pow((-1/pow(b, 1/power)) * (pow(b, 1/power) - 1), 1/power))
+
+r = r > 0.06 ? pow(10, (SR * 1023 - 420)/261.5) * 0.19 - 0.01 : r
+g = g > 0.06 ? pow(10, (SG * 1023 - 420)/261.5) * 0.19 - 0.01 : g
+b = b > 0.06 ? pow(10, (SB * 1023 - 420)/261.5) * 0.19 - 0.01 : b
+```
+
+### Exposure Adjust
+
+Linear exposure adjustment in f-stops
+
 ## TODO:
 - bilateral filter image for single frame denoise
 - temporal filters for video denoise
