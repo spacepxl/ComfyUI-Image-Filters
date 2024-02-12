@@ -66,13 +66,13 @@ Normalizes each frame in a batch to the overall mean and std dev, good for remov
 
 Absolute value of the difference between inputs, with a multiplier to boost dark values for easier viewing. Alternative to the vanilla merge difference node, which is only a subtraction without the abs()
 
-### Image Constant
+### Image Constant (RGB/HSV)
 
-Creates an empty image of any color, with a color picker UI.
+Create an empty image of any color, either RGB or HSV
 
 ### Offset Latent Image
 
-Creates an empty latent image with custom values, for offset noise but with per-channel control.
+Create an empty latent image with custom values, for offset noise but with per-channel control. Can be combined with Latent Stats to get channel values.
 
 ### Latent Stats
 
@@ -108,9 +108,13 @@ b = b > 0.06 ? pow(10, (SB * 1023 - 420)/261.5) * 0.19 - 0.01 : b
 
 ### Exposure Adjust
 
-Linear exposure adjustment in f-stops
+Linear exposure adjustment in f-stops, with optional tonemap.
 
-## TODO:
-- bilateral filter image for single frame denoise
-- temporal filters for video denoise
-- deconvolution
+### Convert Normals
+
+Translate between different normal map color spaces, with optional normalization fix and black region fix.
+
+### Batch Average Image
+
+Returns the single average image of a batch.
+

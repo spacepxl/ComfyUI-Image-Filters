@@ -647,20 +647,63 @@ class ImageConstant:
         return {"required": { "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
                               "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
                               "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
-                              "color": ("COLOR",),
+                              "red": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                              "green": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                              "blue": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
                               }}
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "generate"
 
-    CATEGORY = "image"
+    CATEGORY = "image/filters"
 
-    def generate(self, width, height, batch_size, color):
-        # rgb = color.lstrip('#')
-        rgb = tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+    def generate(self, width, height, batch_size, red, green, blue):
+        r = torch.full([batch_size, height, width, 1], red)
+        g = torch.full([batch_size, height, width, 1], green)
+        b = torch.full([batch_size, height, width, 1], blue)
+        return (torch.cat((r, g, b), dim=-1), )
+
+def hsv_to_rgb(h, s, v):
+    if s:
+        if h == 1.0: h = 0.0
+        i = int(h*6.0)
+        f = h*6.0 - i
         
-        r = torch.full([batch_size, height, width, 1], rgb[0]/255)
-        g = torch.full([batch_size, height, width, 1], rgb[1]/255)
-        b = torch.full([batch_size, height, width, 1], rgb[2]/255)
+        w = v * (1.0 - s)
+        q = v * (1.0 - s * f)
+        t = v * (1.0 - s * (1.0 - f))
+        
+        if i==0: return (v, t, w)
+        if i==1: return (q, v, w)
+        if i==2: return (w, v, t)
+        if i==3: return (w, q, v)
+        if i==4: return (t, w, v)
+        if i==5: return (v, w, q)
+    else: return (v, v, v)
+
+class ImageConstantHSV:
+    def __init__(self, device="cpu"):
+        self.device = device
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                              "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+                              "hue": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                              "saturation": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                              "value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                              }}
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "generate"
+
+    CATEGORY = "image/filters"
+
+    def generate(self, width, height, batch_size, hue, saturation, value):
+        red, green, blue = hsv_to_rgb(hue, saturation, value)
+        
+        r = torch.full([batch_size, height, width, 1], red)
+        g = torch.full([batch_size, height, width, 1], green)
+        b = torch.full([batch_size, height, width, 1], blue)
         return (torch.cat((r, g, b), dim=-1), )
 
 class OffsetLatentImage:
@@ -695,8 +738,8 @@ class LatentStats:
     def INPUT_TYPES(s):
         return {"required": {"latent": ("LATENT", ),}}
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("stats",)
+    RETURN_TYPES = ("STRING", "FLOAT", "FLOAT", "FLOAT", "FLOAT")
+    RETURN_NAMES = ("stats", "c0_mean", "c1_mean", "c2_mean", "c3_mean")
     FUNCTION = "notify"
     OUTPUT_NODE = True
 
@@ -711,10 +754,12 @@ class LatentStats:
         text.append(f"width: {width} ({width * 8})")
         text.append(f"height: {height} ({height * 8})")
         
+        cmean = [0,0,0,0]
         for i in range(4):
             minimum = torch.min(latents[:,i,:,:]).item()
             maximum = torch.max(latents[:,i,:,:]).item()
             std_dev, mean = torch.std_mean(latents[:,i,:,:], dim=None)
+            cmean[i] = mean
             
             text.append(f"c{i} mean: {mean:.1f} std_dev: {std_dev:.1f} min: {minimum:.1f} max: {maximum:.1f}")
         
@@ -730,7 +775,7 @@ class LatentStats:
             returntext += text[i]
         
         print(printtext)
-        return (returntext,)
+        return (returntext, cmean[0], cmean[1], cmean[2], cmean[3])
 
 def sRGBtoLinear(npArray):
     less = npArray <= 0.0404482362771082
@@ -742,16 +787,20 @@ def linearToSRGB(npArray):
     npArray[less] = npArray[less] * 12.92
     npArray[~less] = np.power(npArray[~less], 1/2.4) * 1.055 - 0.055
 
-def linearToTonemap(npArray):
+def linearToTonemap(npArray, tonemap_scale):
+    npArray /= tonemap_scale
     more = npArray > 0.06
     SLog3 = np.clip((np.log10((npArray + 0.01)/0.19) * 261.5 + 420) / 1023, 0, 1)
     npArray[more] = np.power(1 / (1 + (1 / np.power(SLog3[more] / (1 - SLog3[more]), 1.7))), 1.7)
+    npArray *= tonemap_scale
 
-def tonemapToLinear(npArray):
+def tonemapToLinear(npArray, tonemap_scale):
+    npArray /= tonemap_scale
     more = npArray > 0.06
-    x = np.power(np.clip(npArray, 0, 1), 1/1.7)
+    x = np.power(np.clip(npArray, 0.000001, 1), 1/1.7)
     ut = 1 / (1 + np.power((-1 / x) * (x - 1), 1/1.7))
     npArray[more] = np.power(10, (ut[more] * 1023 - 420)/261.5) * 0.19 - 0.01
+    npArray *= tonemap_scale
 
 class Tonemap:
     @classmethod
@@ -761,6 +810,7 @@ class Tonemap:
                 "images": ("IMAGE",),
                 "input_mode": (["linear", "sRGB"],),
                 "output_mode": (["sRGB", "linear"],),
+                "tonemap_scale": ("FLOAT", {"default": 1, "min": 0.1, "max": 10, "step": 0.01}),
             },
         }
 
@@ -769,13 +819,13 @@ class Tonemap:
 
     CATEGORY = "image/filters"
 
-    def apply(self, images, input_mode, output_mode):
+    def apply(self, images, input_mode, output_mode, tonemap_scale):
         t = images.detach().clone().cpu().numpy().astype(np.float32)
         
         if input_mode == "sRGB":
             sRGBtoLinear(t[:,:,:,:3])
         
-        linearToTonemap(t[:,:,:,:3])
+        linearToTonemap(t[:,:,:,:3], tonemap_scale)
         
         if output_mode == "sRGB":
             linearToSRGB(t[:,:,:,:3])
@@ -792,6 +842,7 @@ class UnTonemap:
                 "images": ("IMAGE",),
                 "input_mode": (["sRGB", "linear"],),
                 "output_mode": (["linear", "sRGB"],),
+                "tonemap_scale": ("FLOAT", {"default": 1, "min": 0.1, "max": 10, "step": 0.01}),
             },
         }
 
@@ -800,13 +851,13 @@ class UnTonemap:
 
     CATEGORY = "image/filters"
 
-    def apply(self, images, input_mode, output_mode):
+    def apply(self, images, input_mode, output_mode, tonemap_scale):
         t = images.detach().clone().cpu().numpy().astype(np.float32)
         
         if input_mode == "sRGB":
             sRGBtoLinear(t[:,:,:,:3])
         
-        tonemapToLinear(t[:,:,:,:3])
+        tonemapToLinear(t[:,:,:,:3], tonemap_scale)
         
         if output_mode == "sRGB":
             linearToSRGB(t[:,:,:,:3])
@@ -828,6 +879,8 @@ class ExposureAdjust:
                 "stops": ("FLOAT", {"default": 0.0, "min": -100, "max": 100, "step": 0.01}),
                 "input_mode": (["sRGB", "linear"],),
                 "output_mode": (["sRGB", "linear"],),
+                "use_tonemap": ("BOOLEAN", {"default": False}),
+                "tonemap_scale": ("FLOAT", {"default": 1, "min": 0.1, "max": 10, "step": 0.01}),
             },
         }
 
@@ -836,13 +889,19 @@ class ExposureAdjust:
 
     CATEGORY = "image/filters"
 
-    def apply(self, images, stops, input_mode, output_mode):
+    def apply(self, images, stops, input_mode, output_mode, use_tonemap, tonemap_scale):
         t = images.detach().clone().cpu().numpy().astype(np.float32)
         
         if input_mode == "sRGB":
             sRGBtoLinear(t[:,:,:,:3])
         
+        if use_tonemap:
+            tonemapToLinear(t[:,:,:,:3], tonemap_scale)
+        
         exposure(t[:,:,:,:3], stops)
+        
+        if use_tonemap:
+            linearToTonemap(t[:,:,:,:3], tonemap_scale)
         
         if output_mode == "sRGB":
             linearToSRGB(t[:,:,:,:3])
@@ -850,6 +909,70 @@ class ExposureAdjust:
         
         t = torch.from_numpy(t)
         return (t,)
+
+# Normal map standard coordinates: +r:+x:right, +g:+y:up, +b:+z:in
+class ConvertNormals:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "normals": ("IMAGE",),
+                "input_mode": (["BAE", "MiDaS", "Standard"],),
+                "output_mode": (["BAE", "MiDaS", "Standard"],),
+                "scale_XY": ("FLOAT",{"default": 1, "min": 0, "max": 100, "step": 0.001}),
+                "normalize": ("BOOLEAN", {"default": True}),
+                "fix_black": ("BOOLEAN", {"default": True}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "convert_normals"
+
+    CATEGORY = "image/filters"
+
+    def convert_normals(self, normals, input_mode, output_mode, scale_XY, normalize, fix_black):
+        t = normals.detach().clone()
+        
+        if input_mode == "BAE":
+            t[:,:,:,0] = 1 - t[:,:,:,0] # invert R
+        elif input_mode == "MiDaS":
+            t[:,:,:,:3] = torch.stack([1 - t[:,:,:,2], t[:,:,:,1], t[:,:,:,0]], dim=3) # BGR -> RGB and invert R
+        
+        if fix_black:
+            key = torch.clamp(1 - t[:,:,:,2] * 2, min=0, max=1)
+            t[:,:,:,0] += key * 0.5
+            t[:,:,:,1] += key * 0.5
+            t[:,:,:,2] += key
+        
+        t[:,:,:,:2] = (t[:,:,:,:2] - 0.5) * scale_XY + 0.5
+        
+        if normalize:
+            t[:,:,:,:3] = torch.nn.functional.normalize(t[:,:,:,:3] * 2 - 1, dim=3) / 2 + 0.5
+        
+        if output_mode == "BAE":
+            t[:,:,:,0] = 1 - t[:,:,:,0] # invert R
+        elif output_mode == "MiDaS":
+            t[:,:,:,:3] = torch.stack([t[:,:,:,2], t[:,:,:,1], 1 - t[:,:,:,0]], dim=3) # invert R and BGR -> RGB
+        
+        return (t,)
+
+class BatchAverageImage:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "apply"
+
+    CATEGORY = "image/filters"
+
+    def apply(self, images):
+        t = images.detach().clone()
+        return (torch.mean(t, dim=0, keepdim=True),)
 
 NODE_CLASS_MAPPINGS = {
     "AlphaClean": AlphaClean,
@@ -867,11 +990,14 @@ NODE_CLASS_MAPPINGS = {
     "BatchNormalizeImage": BatchNormalizeImage,
     "DifferenceChecker": DifferenceChecker,
     "ImageConstant": ImageConstant,
+    "ImageConstantHSV": ImageConstantHSV,
     "OffsetLatentImage": OffsetLatentImage,
     "LatentStats": LatentStats,
     "Tonemap": Tonemap,
     "UnTonemap": UnTonemap,
     "ExposureAdjust": ExposureAdjust,
+    "ConvertNormals": ConvertNormals,
+    "BatchAverageImage": BatchAverageImage,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -890,9 +1016,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BatchNormalizeImage": "Batch Normalize (Image)",
     "DifferenceChecker": "Difference Checker",
     "ImageConstant": "Image Constant Color (RGB)",
+    "ImageConstantHSV": "Image Constant Color (HSV)",
     "OffsetLatentImage": "Offset Latent Image",
     "LatentStats": "Latent Stats",
     "Tonemap": "Tonemap",
     "UnTonemap": "UnTonemap",
     "ExposureAdjust": "Exposure Adjust",
+    "ConvertNormals": "Convert Normals",
+    "BatchAverageImage": "Batch Average Image",
 }
