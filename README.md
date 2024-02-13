@@ -118,3 +118,6 @@ Translate between different normal map color spaces, with optional normalization
 
 Returns the single average image of a batch.
 
+### Normal Map (Simple)
+
+Simple high-frequency normal map from Scharr operator
