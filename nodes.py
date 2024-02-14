@@ -923,6 +923,9 @@ class ConvertNormals:
                 "normalize": ("BOOLEAN", {"default": True}),
                 "fix_black": ("BOOLEAN", {"default": True}),
             },
+            "optional": {
+                "optional_fill": ("IMAGE",),
+            },
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -930,7 +933,7 @@ class ConvertNormals:
 
     CATEGORY = "image/filters"
 
-    def convert_normals(self, normals, input_mode, output_mode, scale_XY, normalize, fix_black):
+    def convert_normals(self, normals, input_mode, output_mode, scale_XY, normalize, fix_black, optional_fill=None):
         t = normals.detach().clone()
         
         if input_mode == "BAE":
@@ -940,9 +943,17 @@ class ConvertNormals:
         
         if fix_black:
             key = torch.clamp(1 - t[:,:,:,2] * 2, min=0, max=1)
-            t[:,:,:,0] += key * 0.5
-            t[:,:,:,1] += key * 0.5
-            t[:,:,:,2] += key
+            if optional_fill == None:
+                t[:,:,:,0] += key * 0.5
+                t[:,:,:,1] += key * 0.5
+                t[:,:,:,2] += key
+            else:
+                fill = optional_fill.detach().clone()
+                if fill.shape[1:3] != t.shape[1:3]:
+                    fill = torch.nn.functional.interpolate(fill.movedim(-1,1), size=(t.shape[1], t.shape[2]), mode='bilinear').movedim(1,-1)
+                if fill.shape[0] != t.shape[0]:
+                    fill = fill[0].unsqueeze(0).expand(t.shape[0], -1, -1, -1)
+                t[:,:,:,:3] += fill[:,:,:,:3] * key.unsqueeze(3).expand(-1, -1, -1, 3)
         
         t[:,:,:,:2] = (t[:,:,:,:2] - 0.5) * scale_XY + 0.5
         
@@ -1001,6 +1012,68 @@ class NormalMapSimple:
         t[:,:,:,:3] = torch.nn.functional.normalize(t[:,:,:,:3], dim=3) / 2 + 0.5
         return (t,)
 
+class Keyer:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "operation": (["luminance", "saturation", "max", "min", "red", "green", "blue", "redscreen", "greenscreen", "bluescreen"],),
+                "low": ("FLOAT",{"default": 0, "step": 0.001}),
+                "high": ("FLOAT",{"default": 1, "step": 0.001}),
+                "gamma": ("FLOAT",{"default": 1.0, "min": 0.001, "step": 0.001}),
+                "premult": ("BOOLEAN", {"default": True}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE", "MASK")
+    RETURN_NAMES = ("image", "alpha", "mask")
+    FUNCTION = "keyer"
+
+    CATEGORY = "image/filters"
+
+    def keyer(self, images, operation, low, high, gamma, premult):
+        t = images[:,:,:,:3].detach().clone()
+        
+        if operation == "luminance":
+            alpha = 0.2126 * t[:,:,:,0] + 0.7152 * t[:,:,:,1] + 0.0722 * t[:,:,:,2]
+        elif operation == "saturation":
+            minV = torch.min(t, 3)[0]
+            maxV = torch.max(t, 3)[0]
+            mask = maxV != 0
+            alpha = maxV
+            alpha[mask] = (maxV[mask] - minV[mask]) / maxV[mask]
+        elif operation == "max":
+            alpha = torch.max(t, 3)[0]
+        elif operation == "min":
+            alpha = torch.min(t, 3)[0]
+        elif operation == "red":
+            alpha = t[:,:,:,0]
+        elif operation == "green":
+            alpha = t[:,:,:,1]
+        elif operation == "blue":
+            alpha = t[:,:,:,2]
+        elif operation == "redscreen":
+            alpha = 0.7 * (t[:,:,:,1] + t[:,:,:,2]) - t[:,:,:,0] + 1
+        elif operation == "greenscreen":
+            alpha = 0.7 * (t[:,:,:,0] + t[:,:,:,2]) - t[:,:,:,1] + 1
+        elif operation == "bluescreen":
+            alpha = 0.7 * (t[:,:,:,0] + t[:,:,:,1]) - t[:,:,:,2] + 1
+        else: # should never be reached
+            alpha = t[:,:,:,0] * 0
+        
+        if low == high:
+            alpha = (alpha > high).to(t.dtype)
+        else:
+            alpha = (alpha - low) / (high - low)
+        
+        if gamma != 1.0:
+            alpha = torch.pow(alpha, 1/gamma)
+        alpha = torch.clamp(alpha, min=0, max=1).unsqueeze(3).repeat(1,1,1,3)
+        if premult:
+            t *= alpha
+        return (t, alpha, alpha[:,:,:,0])
+
 NODE_CLASS_MAPPINGS = {
     "AlphaClean": AlphaClean,
     "AlphaMatte": AlphaMatte,
@@ -1026,6 +1099,7 @@ NODE_CLASS_MAPPINGS = {
     "ConvertNormals": ConvertNormals,
     "BatchAverageImage": BatchAverageImage,
     "NormalMapSimple": NormalMapSimple,
+    "Keyer": Keyer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1053,4 +1127,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ConvertNormals": "Convert Normals",
     "BatchAverageImage": "Batch Average Image",
     "NormalMapSimple": "Normal Map (Simple)",
+    "Keyer": "Keyer",
 }

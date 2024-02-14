@@ -121,3 +121,7 @@ Returns the single average image of a batch.
 ### Normal Map (Simple)
 
 Simple high-frequency normal map from Scharr operator
+
+### Keyer
+
+Simple image keyer with luma/sat/channel/greenscreen/etc options
