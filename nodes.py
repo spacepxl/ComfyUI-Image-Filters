@@ -973,6 +973,7 @@ class BatchAverageImage:
         return {
             "required": {
                 "images": ("IMAGE",),
+                "operation": (["mean", "median"],),
             },
         }
 
@@ -981,9 +982,13 @@ class BatchAverageImage:
 
     CATEGORY = "image/filters"
 
-    def apply(self, images):
+    def apply(self, images, operation):
         t = images.detach().clone()
-        return (torch.mean(t, dim=0, keepdim=True),)
+        if operation == "mean":
+            return (torch.mean(t, dim=0, keepdim=True),)
+        elif operation == "median":
+            return (torch.median(t, dim=0, keepdim=True)[0],)
+        return(t,)
 
 class NormalMapSimple:
     @classmethod
@@ -1074,6 +1079,101 @@ class Keyer:
             t *= alpha
         return (t, alpha, alpha[:,:,:,0])
 
+jitter_matrix = torch.Tensor([[[1, 0, 0], [0, 1, 0]], [[1, 0, 1], [0, 1, 0]], [[1, 0, 1], [0, 1, 1]],
+                              [[1, 0, 0], [0, 1, 1]], [[1, 0,-1], [0, 1, 1]], [[1, 0,-1], [0, 1, 0]],
+                              [[1, 0,-1], [0, 1,-1]], [[1, 0, 0], [0, 1,-1]], [[1, 0, 1], [0, 1,-1]]])
+
+class JitterImage:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "jitter_scale": ("FLOAT", {"default": 1.0, "min": 0.1, "step": 0.1}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "jitter"
+
+    CATEGORY = "image/filters/jitter"
+
+    def jitter(self, images, jitter_scale):
+        t = images.detach().clone().movedim(-1,1) # [B x C x H x W]
+        
+        theta = jitter_matrix.detach().clone().to(t.device)
+        theta[:,0,2] *= jitter_scale * 2 / t.shape[3]
+        theta[:,1,2] *= jitter_scale * 2 / t.shape[2]
+        affine = torch.nn.functional.affine_grid(theta, torch.Size([9, t.shape[1], t.shape[2], t.shape[3]]))
+        
+        batch = []
+        for i in range(t.shape[0]):
+            jb = t[i].repeat(9,1,1,1)
+            jb = torch.nn.functional.grid_sample(jb, affine, mode='bilinear', padding_mode='border', align_corners=None)
+            batch.append(jb)
+        
+        t = torch.cat(batch, dim=0).movedim(1,-1) # [B x H x W x C]
+        return (t,)
+
+class UnJitterImage:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "jitter_scale": ("FLOAT", {"default": 1.0, "min": 0.1, "step": 0.1}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "jitter"
+
+    CATEGORY = "image/filters/jitter"
+
+    def jitter(self, images, jitter_scale):
+        t = images.detach().clone().movedim(-1,1) # [B x C x H x W]
+        
+        theta = jitter_matrix.detach().clone().to(t.device)
+        theta[:,0,2] *= jitter_scale * -2 / t.shape[3]
+        theta[:,1,2] *= jitter_scale * -2 / t.shape[2]
+        affine = torch.nn.functional.affine_grid(theta, torch.Size([9, t.shape[1], t.shape[2], t.shape[3]]))
+        
+        batch = []
+        for i in range(t.shape[0] // 9):
+            jb = t[i*9:i*9+9]
+            jb = torch.nn.functional.grid_sample(jb, affine, mode='bicubic', padding_mode='border', align_corners=None)
+            batch.append(jb)
+        
+        t = torch.cat(batch, dim=0).movedim(1,-1) # [B x H x W x C]
+        return (t,)
+
+class BatchAverageUnJittered:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "operation": (["mean", "median"],),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "apply"
+
+    CATEGORY = "image/filters/jitter"
+
+    def apply(self, images, operation):
+        t = images.detach().clone()
+        
+        batch = []
+        for i in range(t.shape[0] // 9):
+            if operation == "mean":
+                batch.append(torch.mean(t[i*9:i*9+9], dim=0, keepdim=True))
+            elif operation == "median":
+                batch.append(torch.median(t[i*9:i*9+9], dim=0, keepdim=True)[0])
+        
+        return (torch.cat(batch, dim=0),)
+
 NODE_CLASS_MAPPINGS = {
     "AlphaClean": AlphaClean,
     "AlphaMatte": AlphaMatte,
@@ -1100,6 +1200,9 @@ NODE_CLASS_MAPPINGS = {
     "BatchAverageImage": BatchAverageImage,
     "NormalMapSimple": NormalMapSimple,
     "Keyer": Keyer,
+    "JitterImage": JitterImage,
+    "UnJitterImage": UnJitterImage,
+    "BatchAverageUnJittered": BatchAverageUnJittered,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1128,4 +1231,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BatchAverageImage": "Batch Average Image",
     "NormalMapSimple": "Normal Map (Simple)",
     "Keyer": "Keyer",
+    "JitterImage": "Jitter Image",
+    "UnJitterImage": "Un-Jitter Image",
+    "BatchAverageUnJittered": "Batch Average Un-Jittered",
 }
