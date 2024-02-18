@@ -6,6 +6,7 @@ import torchvision.transforms
 import numpy as np
 import cv2
 from pymatting import *
+from tqdm import trange
 
 try:
     from cv2.ximgproc import guidedFilter
@@ -13,6 +14,8 @@ except ImportError:
     print("\033[33mUnable to import guidedFilter, make sure you have only opencv-contrib-python or run the import_error_install.bat script\033[m")
 
 import comfy.model_management
+from comfy.utils import ProgressBar
+from .raft import *
 
 MAX_RESOLUTION=8192
 
@@ -1122,6 +1125,7 @@ class UnJitterImage:
             "required": {
                 "images": ("IMAGE",),
                 "jitter_scale": ("FLOAT", {"default": 1.0, "min": 0.1, "step": 0.1}),
+                "oflow_align": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -1130,21 +1134,34 @@ class UnJitterImage:
 
     CATEGORY = "image/filters/jitter"
 
-    def jitter(self, images, jitter_scale):
+    def jitter(self, images, jitter_scale, oflow_align):
         t = images.detach().clone().movedim(-1,1) # [B x C x H x W]
         
-        theta = jitter_matrix.detach().clone().to(t.device)
-        theta[:,0,2] *= jitter_scale * -2 / t.shape[3]
-        theta[:,1,2] *= jitter_scale * -2 / t.shape[2]
-        affine = torch.nn.functional.affine_grid(theta, torch.Size([9, t.shape[1], t.shape[2], t.shape[3]]))
+        if oflow_align:
+            pbar = ProgressBar(t.shape[0] // 9)
+            raft_model, raft_device = load_raft()
+            batch = []
+            for i in trange(t.shape[0] // 9):
+                batch1 = t[i*9].unsqueeze(0).repeat(9,1,1,1)
+                batch2 = t[i*9:i*9+9]
+                flows = raft_flow(raft_model, raft_device, batch1, batch2)
+                batch.append(flows)
+                pbar.update(1)
+            flows = torch.cat(batch, dim=0)
+            t = flow_warp(t, flows)
+        else:
+            theta = jitter_matrix.detach().clone().to(t.device)
+            theta[:,0,2] *= jitter_scale * -2 / t.shape[3]
+            theta[:,1,2] *= jitter_scale * -2 / t.shape[2]
+            affine = torch.nn.functional.affine_grid(theta, torch.Size([9, t.shape[1], t.shape[2], t.shape[3]]))
+            batch = []
+            for i in range(t.shape[0] // 9):
+                jb = t[i*9:i*9+9]
+                jb = torch.nn.functional.grid_sample(jb, affine, mode='bicubic', padding_mode='border', align_corners=None)
+                batch.append(jb)
+            t = torch.cat(batch, dim=0)
         
-        batch = []
-        for i in range(t.shape[0] // 9):
-            jb = t[i*9:i*9+9]
-            jb = torch.nn.functional.grid_sample(jb, affine, mode='bicubic', padding_mode='border', align_corners=None)
-            batch.append(jb)
-        
-        t = torch.cat(batch, dim=0).movedim(1,-1) # [B x H x W x C]
+        t = t.movedim(1,-1) # [B x H x W x C]
         return (t,)
 
 class BatchAverageUnJittered:
@@ -1173,6 +1190,50 @@ class BatchAverageUnJittered:
                 batch.append(torch.median(t[i*9:i*9+9], dim=0, keepdim=True)[0])
         
         return (torch.cat(batch, dim=0),)
+
+class BatchAlign:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "ref_frame": ("INT", {"default": 0, "min": 0}),
+                "direction": (["forward", "backward"],),
+                "blur": ("INT", {"default": 0, "min": 0}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("aligned", "flow")
+    FUNCTION = "apply"
+
+    CATEGORY = "image/filters"
+
+    def apply(self, images, ref_frame, direction, blur):
+        t = images.detach().clone().movedim(-1,1) # [B x C x H x W]
+        rf = min(ref_frame, t.shape[0] - 1)
+        
+        raft_model, raft_device = load_raft()
+        ref = t[rf].unsqueeze(0).repeat(t.shape[0],1,1,1)
+        if direction == "forward":
+            flows = raft_flow(raft_model, raft_device, ref, t)
+        else:
+            flows = raft_flow(raft_model, raft_device, t, ref) * -1
+        
+        if blur > 0:
+            d = blur * 2 + 1
+            dup = flows.movedim(1,-1).detach().clone().cpu().numpy()
+            blurred = []
+            for img in dup:
+                blurred.append(torch.from_numpy(cv2.GaussianBlur(img, (d,d), 0)).unsqueeze(0).movedim(-1,1))
+            flows = torch.cat(blurred).to(flows.device)
+        
+        t = flow_warp(t, flows)
+        
+        t = t.movedim(1,-1) # [B x H x W x C]
+        f = images.detach().clone() * 0
+        f[:,:,:,:2] = flows.movedim(1,-1)
+        return (t,f)
 
 NODE_CLASS_MAPPINGS = {
     "AlphaClean": AlphaClean,
@@ -1203,6 +1264,7 @@ NODE_CLASS_MAPPINGS = {
     "JitterImage": JitterImage,
     "UnJitterImage": UnJitterImage,
     "BatchAverageUnJittered": BatchAverageUnJittered,
+    "BatchAlign": BatchAlign,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1234,4 +1296,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JitterImage": "Jitter Image",
     "UnJitterImage": "Un-Jitter Image",
     "BatchAverageUnJittered": "Batch Average Un-Jittered",
+    "BatchAlign": "Batch Align (RAFT)",
 }
