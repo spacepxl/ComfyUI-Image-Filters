@@ -124,4 +124,20 @@ Simple high-frequency normal map from Scharr operator
 
 ### Keyer
 
-Simple image keyer with luma/sat/channel/greenscreen/etc options
+Image keyer with luma/sat/channel/greenscreen/etc options
+
+### JitterImage, UnJitterImage, BatchAverageUnJittered
+
+For supersampling/antialiasing workflows.
+
+### Shuffle
+
+Move channels around at will.
+
+### ColorMatch
+
+Match image color to reference image, using mean or blur. Similar to AdaIN.
+
+### BetterFilmGrain
+
+Yet another film grain node, but this one looks better (realistic grain structure, no pixel-perfect RGB glitter, natural luminance/intensity response) and is 10x faster than the next best option (ProPostFilmGrain).
