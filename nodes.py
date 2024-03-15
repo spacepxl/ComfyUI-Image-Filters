@@ -1,12 +1,13 @@
-import os
-import sys
+# import os
+# import sys
 import math
 import copy
 import torch
-import torchvision.transforms
+# import torchvision.transforms
 import numpy as np
 import cv2
-from pymatting import *
+# from pymatting import *
+from pymatting import estimate_alpha_cf, estimate_foreground_ml, fix_trimap
 from tqdm import trange
 
 try:
@@ -321,7 +322,7 @@ def cv_blur_tensor(images, dx, dy):
             np_img[index] = cv2.GaussianBlur(image, (dx, dy), 0)
         return torch.from_numpy(np_img)
 
-class ColorMatch:
+class ColorMatchImage:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1433,7 +1434,7 @@ NODE_CLASS_MAPPINGS = {
     "BlurImageFast": BlurImageFast,
     "BlurMaskFast": BlurMaskFast,
     "ClampOutliers": ClampOutliers,
-    "ColorMatch": ColorMatch,
+    "ColorMatchImage": ColorMatchImage,
     "ConvertNormals": ConvertNormals,
     "DifferenceChecker": DifferenceChecker,
     "DilateErodeMask": DilateErodeMask,
@@ -1469,7 +1470,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BlurImageFast": "Blur Image (Fast)",
     "BlurMaskFast": "Blur Mask (Fast)",
     "ClampOutliers": "Clamp Outliers",
-    "ColorMatch": "Color Match",
+    "ColorMatchImage": "Color Match Image",
     "ConvertNormals": "Convert Normals",
     "DifferenceChecker": "Difference Checker",
     "DilateErodeMask": "Dilate/Erode Mask",
