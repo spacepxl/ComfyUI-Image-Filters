@@ -1420,6 +1420,39 @@ class BatchAlign:
         f[:,:,:,:2] = flows.movedim(1,-1)
         return (t,f)
 
+class InstructPixToPixConditioningAdvanced:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"positive": ("CONDITIONING", ),
+                             "negative": ("CONDITIONING", ),
+                             "new": ("LATENT", ),
+                             "original": ("LATENT", ),
+                             }}
+
+    RETURN_TYPES = ("CONDITIONING","CONDITIONING","CONDITIONING","LATENT")
+    RETURN_NAMES = ("cond1", "cond2", "negative", "latent")
+    FUNCTION = "encode"
+
+    CATEGORY = "conditioning/instructpix2pix"
+
+    def encode(self, positive, negative, new, original):
+        new_shape, orig_shape = new["samples"].shape, original["samples"].shape
+        if new_shape != orig_shape:
+            raise Exception(f"Latent shape mismatch: {new_shape} and {orig_shape}")
+        
+        out_latent = {}
+        out_latent["samples"] = new["samples"]
+        out = []
+        for conditioning in [positive, negative]:
+            c = []
+            for t in conditioning:
+                d = t[1].copy()
+                d["concat_latent_image"] = original["samples"]
+                n = [t[0], d]
+                c.append(n)
+            out.append(c)
+        return (out[0], out[1], negative, out_latent)
+
 NODE_CLASS_MAPPINGS = {
     "AdainImage": AdainImage,
     "AdainLatent": AdainLatent,
@@ -1454,6 +1487,7 @@ NODE_CLASS_MAPPINGS = {
     "Tonemap": Tonemap,
     "UnJitterImage": UnJitterImage,
     "UnTonemap": UnTonemap,
+    "InstructPixToPixConditioningAdvanced": InstructPixToPixConditioningAdvanced,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1490,4 +1524,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Tonemap": "Tonemap",
     "UnJitterImage": "Un-Jitter Image",
     "UnTonemap": "UnTonemap",
+    "InstructPixToPixConditioningAdvanced": "InstructPixToPixConditioningAdvanced",
 }
