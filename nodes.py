@@ -1500,6 +1500,21 @@ class LatentNormalizeShuffle:
         latents_copy["samples"] = t
         return (latents_copy,)
 
+class PrintSigmas:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+            "sigmas": ("SIGMAS",)
+            }}
+    RETURN_TYPES = ("SIGMAS",)
+    FUNCTION = "notify"
+    OUTPUT_NODE = True
+    CATEGORY = "utils"
+    
+    def notify(self, sigmas):
+        print(sigmas)
+        return (sigmas,)
+
 NODE_CLASS_MAPPINGS = {
     "AdainImage": AdainImage,
     "AdainLatent": AdainLatent,
@@ -1536,6 +1551,7 @@ NODE_CLASS_MAPPINGS = {
     "UnTonemap": UnTonemap,
     "InstructPixToPixConditioningAdvanced": InstructPixToPixConditioningAdvanced,
     "LatentNormalizeShuffle": LatentNormalizeShuffle,
+    "PrintSigmas": PrintSigmas,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1574,4 +1590,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "UnTonemap": "UnTonemap",
     "InstructPixToPixConditioningAdvanced": "InstructPixToPixConditioningAdvanced",
     "LatentNormalizeShuffle": "LatentNormalizeShuffle",
+    "PrintSigmas": "PrintSigmas",
 }
