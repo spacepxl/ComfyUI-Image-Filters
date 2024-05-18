@@ -365,6 +365,63 @@ class ColorMatchImage:
         t = torch.lerp(images, t, factor)
         return (t,)
 
+def guided_filter_tensor(ref, images, d, s):
+    if d > 100:
+        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        np_ref = torch.nn.functional.interpolate(ref.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        for index, image in enumerate(np_img):
+            np_img[index] = guidedFilter(np_ref[index], image, d // 20 * 2 + 1, s)
+        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
+    else:
+        np_img = images.cpu().numpy()
+        np_ref = ref.cpu().numpy()
+        for index, image in enumerate(np_img):
+            np_img[index] = guidedFilter(np_ref[index], image, d, s)
+        return torch.from_numpy(np_img)
+
+class RestoreDetail:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE", ),
+                "detail": ("IMAGE", ),
+                "mode": (["add", "multiply"],),
+                "blur_type": (["blur", "guidedFilter"],),
+                "blur_size": ("INT", {"default": 1, "min": 1, "max": 1023}),
+                "factor": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01,  "round": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "batch_normalize"
+
+    CATEGORY = "image/filters"
+
+    def batch_normalize(self, images, detail, mode, blur_type, blur_size, factor):
+        t = images.detach().clone()
+        ref = detail.detach().clone()
+        if ref.shape[0] < t.shape[0]:
+            ref = ref[0].unsqueeze(0).repeat(t.shape[0], 1, 1, 1)
+        
+        d = blur_size * 2 + 1
+        if blur_type == "blur":
+            blurred = cv_blur_tensor(torch.clamp(t, 0.001, 1), d, d)
+            blurred_ref = cv_blur_tensor(torch.clamp(ref, 0.001, 1), d, d)
+        elif blur_type == "guidedFilter":
+            t_clamp = torch.clamp(t, 0.001, 1)
+            ref_clamp = torch.clamp(ref, 0.001, 1)
+            blurred = guided_filter_tensor(ref_clamp, t_clamp, d, 0.01)
+            blurred_ref = guided_filter_tensor(ref_clamp, ref_clamp, d, 0.01)
+        
+        if mode == "multiply":
+            t = (ref / blurred_ref) * blurred
+        else:
+            t = (ref - blurred_ref) + blurred
+        
+        t = torch.clamp(torch.lerp(images, t, factor), 0, 1)
+        return (t,)
+
 class DilateErodeMask:
     def __init__(self):
         pass
@@ -1530,6 +1587,7 @@ NODE_CLASS_MAPPINGS = {
     "BlurMaskFast": BlurMaskFast,
     "ClampOutliers": ClampOutliers,
     "ColorMatchImage": ColorMatchImage,
+    "RestoreDetail": RestoreDetail,
     "ConvertNormals": ConvertNormals,
     "DifferenceChecker": DifferenceChecker,
     "DilateErodeMask": DilateErodeMask,
@@ -1569,6 +1627,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BlurMaskFast": "Blur Mask (Fast)",
     "ClampOutliers": "Clamp Outliers",
     "ColorMatchImage": "Color Match Image",
+    "RestoreDetail": "Restore Detail",
     "ConvertNormals": "Convert Normals",
     "DifferenceChecker": "Difference Checker",
     "DilateErodeMask": "Dilate/Erode Mask",
