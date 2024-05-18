@@ -138,6 +138,12 @@ Move channels around at will.
 
 Match image color to reference image, using mean or blur. Similar to AdaIN.
 
+### RestoreDetail
+
+Transfers details from one image to another using frequency separation techniques. Useful for restoring the lost details from IC-Light or other img2img workflows. Has options for add/subtract method (fewer artifacts, but mostly ignores highlights) or divide/multiply (more natural but can create artifacts in areas that go from dark to bright), and either gaussian blur or guided filter (prevents oversharpened edges).
+
+![restore_detail](https://github.com/spacepxl/ComfyUI-Image-Filters/assets/143970342/aa4fedce-e622-4ebe-b8e7-6348d37878a5)
+
 ### BetterFilmGrain
 
 Yet another film grain node, but this one looks better (realistic grain structure, no pixel-perfect RGB glitter, natural luminance/intensity response) and is 10x faster than the next best option (ProPostFilmGrain).
