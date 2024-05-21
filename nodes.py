@@ -311,6 +311,7 @@ class BlurMaskFast:
         
         return (torch.from_numpy(dup),)
 
+# gaussian blur a tensor image batch in format [B x H x W x C] on H/W (spatial, per-image, per-channel)
 def cv_blur_tensor(images, dx, dy):
     if min(dx, dy) > 100:
         np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
@@ -323,6 +324,21 @@ def cv_blur_tensor(images, dx, dy):
             np_img[index] = cv2.GaussianBlur(image, (dx, dy), 0)
         return torch.from_numpy(np_img)
 
+# guided filter a tensor image batch in format [B x H x W x C] on H/W (spatial, per-image, per-channel)
+def guided_filter_tensor(ref, images, d, s):
+    if d > 100:
+        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        np_ref = torch.nn.functional.interpolate(ref.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        for index, image in enumerate(np_img):
+            np_img[index] = guidedFilter(np_ref[index], image, d // 20 * 2 + 1, s)
+        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
+    else:
+        np_img = images.detach().clone().cpu().numpy()
+        np_ref = ref.cpu().numpy()
+        for index, image in enumerate(np_img):
+            np_img[index] = guidedFilter(np_ref[index], image, d, s)
+        return torch.from_numpy(np_img)
+
 class ColorMatchImage:
     @classmethod
     def INPUT_TYPES(s):
@@ -330,7 +346,8 @@ class ColorMatchImage:
             "required": {
                 "images": ("IMAGE", ),
                 "reference": ("IMAGE", ),
-                "blur": ("INT", {"default": 0, "min": 0, "max": 1023}),
+                "blur_type": (["blur", "guidedFilter"],),
+                "blur_size": ("INT", {"default": 0, "min": 0, "max": 1023}),
                 "factor": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01,  "round": 0.01}),
             },
         }
@@ -340,23 +357,33 @@ class ColorMatchImage:
 
     CATEGORY = "image/filters"
 
-    def batch_normalize(self, images, reference, blur, factor):
+    def batch_normalize(self, images, reference, blur_type, blur_size, factor):
         t = images.detach().clone()
         ref = reference.detach().clone()
+        
         if ref.shape[0] < t.shape[0]:
             ref = ref[0].unsqueeze(0).repeat(t.shape[0], 1, 1, 1)
         
-        if blur == 0:
+        if blur_size == 0:
             mean = torch.mean(t, (1,2), keepdim=True)
             mean_ref = torch.mean(ref, (1,2), keepdim=True)
+            
             for i in range(t.shape[0]):
                 for c in range(3):
                     t[i,:,:,c] /= mean[i,0,0,c]
                     t[i,:,:,c] *= mean_ref[i,0,0,c]
         else:
-            d = blur * 2 + 1
-            blurred = cv_blur_tensor(torch.clamp(t, 0.001, 1), d, d)
-            blurred_ref = cv_blur_tensor(torch.clamp(ref, 0.001, 1), d, d)
+            d = blur_size * 2 + 1
+            
+            if blur_type == "blur":
+                blurred = cv_blur_tensor(torch.clamp(t, 0.001, 1), d, d)
+                blurred_ref = cv_blur_tensor(torch.clamp(ref, 0.001, 1), d, d)
+            elif blur_type == "guidedFilter":
+                t_clamp = torch.clamp(t, 0.001, 1)
+                ref_clamp = torch.clamp(ref, 0.001, 1)
+                blurred = guided_filter_tensor(t_clamp, t_clamp, d, 0.01)
+                blurred_ref = guided_filter_tensor(ref_clamp, ref_clamp, d, 0.01)
+            
             for i in range(t.shape[0]):
                 for c in range(3):
                     t[i,:,:,c] /= blurred[i,:,:,c]
@@ -364,20 +391,6 @@ class ColorMatchImage:
         
         t = torch.lerp(images, t, factor)
         return (t,)
-
-def guided_filter_tensor(ref, images, d, s):
-    if d > 100:
-        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
-        np_ref = torch.nn.functional.interpolate(ref.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
-        for index, image in enumerate(np_img):
-            np_img[index] = guidedFilter(np_ref[index], image, d // 20 * 2 + 1, s)
-        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
-    else:
-        np_img = images.cpu().numpy()
-        np_ref = ref.cpu().numpy()
-        for index, image in enumerate(np_img):
-            np_img[index] = guidedFilter(np_ref[index], image, d, s)
-        return torch.from_numpy(np_img)
 
 class RestoreDetail:
     @classmethod
@@ -401,10 +414,12 @@ class RestoreDetail:
     def batch_normalize(self, images, detail, mode, blur_type, blur_size, factor):
         t = images.detach().clone()
         ref = detail.detach().clone()
+        
         if ref.shape[0] < t.shape[0]:
             ref = ref[0].unsqueeze(0).repeat(t.shape[0], 1, 1, 1)
         
         d = blur_size * 2 + 1
+        
         if blur_type == "blur":
             blurred = cv_blur_tensor(torch.clamp(t, 0.001, 1), d, d)
             blurred_ref = cv_blur_tensor(torch.clamp(ref, 0.001, 1), d, d)
@@ -721,6 +736,51 @@ class AdainLatent:
                 t[c, i] = ((t[c, i] - i_mean) / i_sd) * r_sd + r_mean
         
         latents_copy["samples"] = torch.lerp(latents["samples"], t.movedim(1,0), factor) # [B x C x H x W]
+        return (latents_copy,)
+
+# std_dev and mean of tensor t within local spatial filter size d, per-image, per-channel [B x H x W x C]
+def std_mean_filter(t, d):
+    t_mean = cv_blur_tensor(t, d, d)
+    t_diff_squared = (t - t_mean) ** 2
+    t_std = torch.sqrt(cv_blur_tensor(t_diff_squared, d, d))
+    return t_std, t_mean
+
+class AdainFilterLatent:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents": ("LATENT", ),
+                "reference": ("LATENT", ),
+                "filter_size": ("INT", {"default": 1, "min": 1, "max": 128}),
+                "factor": ("FLOAT", {"default": 1.0, "min": -10.0, "max": 10.0, "step": 0.01,  "round": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "batch_normalize"
+
+    CATEGORY = "latent/filters"
+
+    def batch_normalize(self, latents, reference, filter_size, factor):
+        latents_copy = copy.deepcopy(latents)
+        
+        t = latents_copy["samples"].movedim(1, -1) # [B x C x H x W] -> [B x H x W x C]
+        ref = reference["samples"].movedim(1, -1)
+        
+        d = filter_size * 2 + 1
+        
+        t_std, t_mean = std_mean_filter(t, d)
+        ref_std, ref_mean = std_mean_filter(ref, d)
+        
+        t = (t - t_mean) / t_std
+        t = t * ref_std + ref_mean
+        t = t.movedim(-1, 1) # [B x H x W x C] -> [B x C x H x W]
+        
+        latents_copy["samples"] = torch.lerp(latents["samples"], t, factor)
         return (latents_copy,)
 
 class AdainImage:
@@ -1484,7 +1544,9 @@ class InstructPixToPixConditioningAdvanced:
         return {"required": {"positive": ("CONDITIONING", ),
                              "negative": ("CONDITIONING", ),
                              "new": ("LATENT", ),
+                             "new_scale": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 100.0, "step": 0.01}),
                              "original": ("LATENT", ),
+                             "original_scale": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 100.0, "step": 0.01}),
                              }}
 
     RETURN_TYPES = ("CONDITIONING","CONDITIONING","CONDITIONING","LATENT")
@@ -1493,19 +1555,19 @@ class InstructPixToPixConditioningAdvanced:
 
     CATEGORY = "conditioning/instructpix2pix"
 
-    def encode(self, positive, negative, new, original):
+    def encode(self, positive, negative, new, new_scale, original, original_scale):
         new_shape, orig_shape = new["samples"].shape, original["samples"].shape
         if new_shape != orig_shape:
             raise Exception(f"Latent shape mismatch: {new_shape} and {orig_shape}")
         
         out_latent = {}
-        out_latent["samples"] = new["samples"]
+        out_latent["samples"] = new["samples"] * new_scale
         out = []
         for conditioning in [positive, negative]:
             c = []
             for t in conditioning:
                 d = t[1].copy()
-                d["concat_latent_image"] = original["samples"]
+                d["concat_latent_image"] = original["samples"] * original_scale
                 n = [t[0], d]
                 c.append(n)
             out.append(c)
@@ -1575,6 +1637,7 @@ class PrintSigmas:
 NODE_CLASS_MAPPINGS = {
     "AdainImage": AdainImage,
     "AdainLatent": AdainLatent,
+    "AdainFilterLatent": AdainFilterLatent,
     "AlphaClean": AlphaClean,
     "AlphaMatte": AlphaMatte,
     "BatchAlign": BatchAlign,
@@ -1615,6 +1678,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AdainImage": "AdaIN (Image)",
     "AdainLatent": "AdaIN (Latent)",
+    "AdainFilterLatent": "AdaIN Filter (Latent)",
     "AlphaClean": "Alpha Clean",
     "AlphaMatte": "Alpha Matte",
     "BatchAlign": "Batch Align (RAFT)",
