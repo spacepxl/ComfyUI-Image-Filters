@@ -1,12 +1,8 @@
-# import os
-# import sys
 import math
 import copy
 import torch
-# import torchvision.transforms
 import numpy as np
 import cv2
-# from pymatting import *
 from pymatting import estimate_alpha_cf, estimate_foreground_ml, fix_trimap
 from tqdm import trange
 
@@ -21,6 +17,102 @@ from comfy_extras.nodes_post_processing import gaussian_kernel
 from .raft import *
 
 MAX_RESOLUTION=8192
+
+# gaussian blur a tensor image batch in format [B x H x W x C] on H/W (spatial, per-image, per-channel)
+def cv_blur_tensor(images, dx, dy):
+    if min(dx, dy) > 100:
+        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        for index, image in enumerate(np_img):
+            np_img[index] = cv2.GaussianBlur(image, (dx // 20 * 2 + 1, dy // 20 * 2 + 1), 0)
+        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
+    else:
+        np_img = images.detach().clone().cpu().numpy()
+        for index, image in enumerate(np_img):
+            np_img[index] = cv2.GaussianBlur(image, (dx, dy), 0)
+        return torch.from_numpy(np_img)
+
+# guided filter a tensor image batch in format [B x H x W x C] on H/W (spatial, per-image, per-channel)
+def guided_filter_tensor(ref, images, d, s):
+    if d > 100:
+        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        np_ref = torch.nn.functional.interpolate(ref.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        for index, image in enumerate(np_img):
+            np_img[index] = guidedFilter(np_ref[index], image, d // 20 * 2 + 1, s)
+        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
+    else:
+        np_img = images.detach().clone().cpu().numpy()
+        np_ref = ref.cpu().numpy()
+        for index, image in enumerate(np_img):
+            np_img[index] = guidedFilter(np_ref[index], image, d, s)
+        return torch.from_numpy(np_img)
+
+# std_dev and mean of tensor t within local spatial filter size d, per-image, per-channel [B x H x W x C]
+def std_mean_filter(t, d):
+    t_mean = cv_blur_tensor(t, d, d)
+    t_diff_squared = (t - t_mean) ** 2
+    t_std = torch.sqrt(cv_blur_tensor(t_diff_squared, d, d))
+    return t_std, t_mean
+
+def RGB2YCbCr(t):
+    YCbCr = t.detach().clone()
+    YCbCr[:,:,:,0] = 0.2123 * t[:,:,:,0] + 0.7152 * t[:,:,:,1] + 0.0722 * t[:,:,:,2]
+    YCbCr[:,:,:,1] = 0 - 0.1146 * t[:,:,:,0] - 0.3854 * t[:,:,:,1] + 0.5 * t[:,:,:,2]
+    YCbCr[:,:,:,2] = 0.5 * t[:,:,:,0] - 0.4542 * t[:,:,:,1] - 0.0458 * t[:,:,:,2]
+    return YCbCr
+
+def YCbCr2RGB(t):
+    RGB = t.detach().clone()
+    RGB[:,:,:,0] = t[:,:,:,0] + 1.5748 * t[:,:,:,2]
+    RGB[:,:,:,1] = t[:,:,:,0] - 0.1873 * t[:,:,:,1] - 0.4681 * t[:,:,:,2]
+    RGB[:,:,:,2] = t[:,:,:,0] + 1.8556 * t[:,:,:,1]
+    return RGB
+
+def hsv_to_rgb(h, s, v):
+    if s:
+        if h == 1.0: h = 0.0
+        i = int(h*6.0)
+        f = h*6.0 - i
+        
+        w = v * (1.0 - s)
+        q = v * (1.0 - s * f)
+        t = v * (1.0 - s * (1.0 - f))
+        
+        if i==0: return (v, t, w)
+        if i==1: return (q, v, w)
+        if i==2: return (w, v, t)
+        if i==3: return (w, q, v)
+        if i==4: return (t, w, v)
+        if i==5: return (v, w, q)
+    else: return (v, v, v)
+
+def sRGBtoLinear(npArray):
+    less = npArray <= 0.0404482362771082
+    npArray[less] = npArray[less] / 12.92
+    npArray[~less] = np.power((npArray[~less] + 0.055) / 1.055, 2.4)
+
+def linearToSRGB(npArray):
+    less = npArray <= 0.0031308
+    npArray[less] = npArray[less] * 12.92
+    npArray[~less] = np.power(npArray[~less], 1/2.4) * 1.055 - 0.055
+
+def linearToTonemap(npArray, tonemap_scale):
+    npArray /= tonemap_scale
+    more = npArray > 0.06
+    SLog3 = np.clip((np.log10((npArray + 0.01)/0.19) * 261.5 + 420) / 1023, 0, 1)
+    npArray[more] = np.power(1 / (1 + (1 / np.power(SLog3[more] / (1 - SLog3[more]), 1.7))), 1.7)
+    npArray *= tonemap_scale
+
+def tonemapToLinear(npArray, tonemap_scale):
+    npArray /= tonemap_scale
+    more = npArray > 0.06
+    x = np.power(np.clip(npArray, 0.000001, 1), 1/1.7)
+    ut = 1 / (1 + np.power((-1 / x) * (x - 1), 1/1.7))
+    npArray[more] = np.power(10, (ut[more] * 1023 - 420)/261.5) * 0.19 - 0.01
+    npArray *= tonemap_scale
+
+def exposure(npArray, stops):
+    more = npArray > 0
+    npArray[more] *= pow(2, stops)
 
 class AlphaClean:
     def __init__(self):
@@ -170,20 +262,6 @@ class AlphaMatte:
             torch.from_numpy(bg.astype(np.float32)), # bg
             )
 
-def RGB2YCbCr(t):
-    YCbCr = t.detach().clone()
-    YCbCr[:,:,:,0] = 0.2123 * t[:,:,:,0] + 0.7152 * t[:,:,:,1] + 0.0722 * t[:,:,:,2]
-    YCbCr[:,:,:,1] = 0 - 0.1146 * t[:,:,:,0] - 0.3854 * t[:,:,:,1] + 0.5 * t[:,:,:,2]
-    YCbCr[:,:,:,2] = 0.5 * t[:,:,:,0] - 0.4542 * t[:,:,:,1] - 0.0458 * t[:,:,:,2]
-    return YCbCr
-
-def YCbCr2RGB(t):
-    RGB = t.detach().clone()
-    RGB[:,:,:,0] = t[:,:,:,0] + 1.5748 * t[:,:,:,2]
-    RGB[:,:,:,1] = t[:,:,:,0] - 0.1873 * t[:,:,:,1] - 0.4681 * t[:,:,:,2]
-    RGB[:,:,:,2] = t[:,:,:,0] + 1.8556 * t[:,:,:,1]
-    return RGB
-
 class BetterFilmGrain:
     @classmethod
     def INPUT_TYPES(s):
@@ -310,34 +388,6 @@ class BlurMaskFast:
             dup[index] = cv2.GaussianBlur(mask, (dx, dy), 0)
         
         return (torch.from_numpy(dup),)
-
-# gaussian blur a tensor image batch in format [B x H x W x C] on H/W (spatial, per-image, per-channel)
-def cv_blur_tensor(images, dx, dy):
-    if min(dx, dy) > 100:
-        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
-        for index, image in enumerate(np_img):
-            np_img[index] = cv2.GaussianBlur(image, (dx // 20 * 2 + 1, dy // 20 * 2 + 1), 0)
-        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
-    else:
-        np_img = images.detach().clone().cpu().numpy()
-        for index, image in enumerate(np_img):
-            np_img[index] = cv2.GaussianBlur(image, (dx, dy), 0)
-        return torch.from_numpy(np_img)
-
-# guided filter a tensor image batch in format [B x H x W x C] on H/W (spatial, per-image, per-channel)
-def guided_filter_tensor(ref, images, d, s):
-    if d > 100:
-        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
-        np_ref = torch.nn.functional.interpolate(ref.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
-        for index, image in enumerate(np_img):
-            np_img[index] = guidedFilter(np_ref[index], image, d // 20 * 2 + 1, s)
-        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
-    else:
-        np_img = images.detach().clone().cpu().numpy()
-        np_ref = ref.cpu().numpy()
-        for index, image in enumerate(np_img):
-            np_img[index] = guidedFilter(np_ref[index], image, d, s)
-        return torch.from_numpy(np_img)
 
 class ColorMatchImage:
     @classmethod
@@ -548,6 +598,7 @@ class EnhanceDetail:
         
         return (torch.from_numpy(dup),)
 
+# DEPRECATED: use GuidedFilterImage instead
 class GuidedFilterAlpha:
     def __init__(self):
         pass
@@ -591,6 +642,129 @@ class GuidedFilterAlpha:
             i_dup[index] = guidedFilter(image, alpha_work, d, s)
         
         return (torch.from_numpy(i_dup),)
+
+class GuidedFilterImage:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE", ),
+                "guide": ("IMAGE", ),
+                "size": ("INT", {"default": 4, "min": 0, "max": 1023}),
+                "sigma": ("FLOAT", {"default": 0.1, "min": 0.01, "max": 100.0, "step": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "filter_image"
+
+    CATEGORY = "image/filters"
+
+    def filter_image(self, images, guide, size, sigma):
+        d = size * 2 + 1
+        s = sigma / 10
+        filtered = guided_filter_tensor(guide, images, d, s)
+        return (filtered,)
+
+class MedianFilterImage:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE", ),
+                "size": ("INT", {"default": 1, "min": 1, "max": 1023}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "filter_image"
+
+    CATEGORY = "image/filters"
+
+    def filter_image(self, images, size):
+        np_images = images.detach().clone().cpu().numpy()
+        d = size * 2 + 1
+        for index, image in enumerate(np_images):
+            if d > 5:
+                work_image = image * 255
+                work_image = cv2.medianBlur(work_image.astype(np.uint8), d)
+                np_images[index] = work_image.astype(np.float32) / 255
+            else:
+                np_images[index] = cv2.medianBlur(image, d)
+        return (torch.from_numpy(np_images),)
+
+class BilateralFilterImage:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE", ),
+                "size": ("INT", {"default": 8, "min": 1, "max": 64}),
+                "sigma_color": ("FLOAT", {"default": 0.5, "min": 0.01, "max": 1000.0, "step": 0.01}),
+                "sigma_space": ("FLOAT", {"default": 100.0, "min": 0.01, "max": 1000.0, "step": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "filter_image"
+
+    CATEGORY = "image/filters"
+
+    def filter_image(self, images, size, sigma_color, sigma_space):
+        np_images = images.detach().clone().cpu().numpy()
+        d = size * 2 + 1
+        for index, image in enumerate(np_images):
+            np_images[index] = cv2.bilateralFilter(image, d, sigma_color, sigma_space)
+        return (torch.from_numpy(np_images),)
+
+class FrequencyCombine:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "high_frequency": ("IMAGE", ),
+                "low_frequency": ("IMAGE", ),
+                "mode": (["subtract", "divide"],),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "filter_image"
+
+    CATEGORY = "image/filters"
+
+    def filter_image(self, high_frequency, low_frequency, mode):
+        t = low_frequency.detach().clone()
+        if mode == "subtract":
+            t = t + high_frequency - 0.5
+        else:
+            t = (high_frequency * 2) * (t + 0.01) - 0.01
+        return (torch.clamp(t, 0, 1),)
+
+class FrequencySeparate:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "original": ("IMAGE", ),
+                "low_frequency": ("IMAGE", ),
+                "mode": (["subtract", "divide"],),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("high_frequency",)
+    FUNCTION = "filter_image"
+
+    CATEGORY = "image/filters"
+
+    def filter_image(self, original, low_frequency, mode):
+        t = original.detach().clone()
+        if mode == "subtract":
+            t = t - low_frequency + 0.5
+        else:
+            t = ((t + 0.01) / (low_frequency + 0.01)) * 0.5
+        return (t,)
 
 class RemapRange:
     def __init__(self):
@@ -737,13 +911,6 @@ class AdainLatent:
         
         latents_copy["samples"] = torch.lerp(latents["samples"], t.movedim(1,0), factor) # [B x C x H x W]
         return (latents_copy,)
-
-# std_dev and mean of tensor t within local spatial filter size d, per-image, per-channel [B x H x W x C]
-def std_mean_filter(t, d):
-    t_mean = cv_blur_tensor(t, d, d)
-    t_diff_squared = (t - t_mean) ** 2
-    t_std = torch.sqrt(cv_blur_tensor(t_diff_squared, d, d))
-    return t_std, t_mean
 
 class AdainFilterLatent:
     def __init__(self):
@@ -969,24 +1136,6 @@ class ImageConstant:
         b = torch.full([batch_size, height, width, 1], blue)
         return (torch.cat((r, g, b), dim=-1), )
 
-def hsv_to_rgb(h, s, v):
-    if s:
-        if h == 1.0: h = 0.0
-        i = int(h*6.0)
-        f = h*6.0 - i
-        
-        w = v * (1.0 - s)
-        q = v * (1.0 - s * f)
-        t = v * (1.0 - s * (1.0 - f))
-        
-        if i==0: return (v, t, w)
-        if i==1: return (q, v, w)
-        if i==2: return (w, v, t)
-        if i==3: return (w, q, v)
-        if i==4: return (t, w, v)
-        if i==5: return (v, w, q)
-    else: return (v, v, v)
-
 class ImageConstantHSV:
     def __init__(self, device="cpu"):
         self.device = device
@@ -1117,31 +1266,6 @@ class LatentStats:
         print(printtext)
         return (returntext, cmean[0], cmean[1], cmean[2], cmean[3])
 
-def sRGBtoLinear(npArray):
-    less = npArray <= 0.0404482362771082
-    npArray[less] = npArray[less] / 12.92
-    npArray[~less] = np.power((npArray[~less] + 0.055) / 1.055, 2.4)
-
-def linearToSRGB(npArray):
-    less = npArray <= 0.0031308
-    npArray[less] = npArray[less] * 12.92
-    npArray[~less] = np.power(npArray[~less], 1/2.4) * 1.055 - 0.055
-
-def linearToTonemap(npArray, tonemap_scale):
-    npArray /= tonemap_scale
-    more = npArray > 0.06
-    SLog3 = np.clip((np.log10((npArray + 0.01)/0.19) * 261.5 + 420) / 1023, 0, 1)
-    npArray[more] = np.power(1 / (1 + (1 / np.power(SLog3[more] / (1 - SLog3[more]), 1.7))), 1.7)
-    npArray *= tonemap_scale
-
-def tonemapToLinear(npArray, tonemap_scale):
-    npArray /= tonemap_scale
-    more = npArray > 0.06
-    x = np.power(np.clip(npArray, 0.000001, 1), 1/1.7)
-    ut = 1 / (1 + np.power((-1 / x) * (x - 1), 1/1.7))
-    npArray[more] = np.power(10, (ut[more] * 1023 - 420)/261.5) * 0.19 - 0.01
-    npArray *= tonemap_scale
-
 class Tonemap:
     @classmethod
     def INPUT_TYPES(s):
@@ -1205,10 +1329,6 @@ class UnTonemap:
         
         t = torch.from_numpy(t)
         return (t,)
-
-def exposure(npArray, stops):
-    more = npArray > 0
-    npArray[more] *= pow(2, stops)
 
 class ExposureAdjust:
     @classmethod
@@ -1669,9 +1789,9 @@ class PrintSigmas:
         return (sigmas,)
 
 NODE_CLASS_MAPPINGS = {
+    "AdainFilterLatent": AdainFilterLatent,
     "AdainImage": AdainImage,
     "AdainLatent": AdainLatent,
-    "AdainFilterLatent": AdainFilterLatent,
     "AlphaClean": AlphaClean,
     "AlphaMatte": AlphaMatte,
     "BatchAlign": BatchAlign,
@@ -1680,40 +1800,45 @@ NODE_CLASS_MAPPINGS = {
     "BatchNormalizeImage": BatchNormalizeImage,
     "BatchNormalizeLatent": BatchNormalizeLatent,
     "BetterFilmGrain": BetterFilmGrain,
+    "BilateralFilterImage": BilateralFilterImage,
     "BlurImageFast": BlurImageFast,
     "BlurMaskFast": BlurMaskFast,
     "ClampOutliers": ClampOutliers,
     "ColorMatchImage": ColorMatchImage,
-    "RestoreDetail": RestoreDetail,
     "ConvertNormals": ConvertNormals,
     "DifferenceChecker": DifferenceChecker,
     "DilateErodeMask": DilateErodeMask,
     "EnhanceDetail": EnhanceDetail,
     "ExposureAdjust": ExposureAdjust,
+    "FrequencyCombine": FrequencyCombine,
+    "FrequencySeparate": FrequencySeparate,
     "GuidedFilterAlpha": GuidedFilterAlpha,
+    "GuidedFilterImage": GuidedFilterImage,
     "ImageConstant": ImageConstant,
     "ImageConstantHSV": ImageConstantHSV,
+    "InstructPixToPixConditioningAdvanced": InstructPixToPixConditioningAdvanced,
     "JitterImage": JitterImage,
     "Keyer": Keyer,
+    "LatentNormalizeShuffle": LatentNormalizeShuffle,
     "LatentStats": LatentStats,
+    "MedianFilterImage": MedianFilterImage,
     "NormalMapSimple": NormalMapSimple,
     "OffsetLatentImage": OffsetLatentImage,
+    "PrintSigmas": PrintSigmas,
     "RelightSimple": RelightSimple,
     "RemapRange": RemapRange,
+    "RestoreDetail": RestoreDetail,
+    "SharpenFilterLatent": SharpenFilterLatent,
     "ShuffleChannels": ShuffleChannels,
     "Tonemap": Tonemap,
     "UnJitterImage": UnJitterImage,
     "UnTonemap": UnTonemap,
-    "InstructPixToPixConditioningAdvanced": InstructPixToPixConditioningAdvanced,
-    "LatentNormalizeShuffle": LatentNormalizeShuffle,
-    "PrintSigmas": PrintSigmas,
-    "SharpenFilterLatent": SharpenFilterLatent,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "AdainFilterLatent": "AdaIN Filter (Latent)",
     "AdainImage": "AdaIN (Image)",
     "AdainLatent": "AdaIN (Latent)",
-    "AdainFilterLatent": "AdaIN Filter (Latent)",
     "AlphaClean": "Alpha Clean",
     "AlphaMatte": "Alpha Matte",
     "BatchAlign": "Batch Align (RAFT)",
@@ -1722,32 +1847,37 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BatchNormalizeImage": "Batch Normalize (Image)",
     "BatchNormalizeLatent": "Batch Normalize (Latent)",
     "BetterFilmGrain": "Better Film Grain",
+    "BilateralFilterImage": "Bilateral Filter Image",
     "BlurImageFast": "Blur Image (Fast)",
     "BlurMaskFast": "Blur Mask (Fast)",
     "ClampOutliers": "Clamp Outliers",
     "ColorMatchImage": "Color Match Image",
-    "RestoreDetail": "Restore Detail",
     "ConvertNormals": "Convert Normals",
     "DifferenceChecker": "Difference Checker",
     "DilateErodeMask": "Dilate/Erode Mask",
     "EnhanceDetail": "Enhance Detail",
     "ExposureAdjust": "Exposure Adjust",
-    "GuidedFilterAlpha": "Guided Filter Alpha",
+    "FrequencyCombine": "Frequency Combine",
+    "FrequencySeparate": "Frequency Separate",
+    "GuidedFilterAlpha": "(DEPRECATED) Guided Filter Alpha",
+    "GuidedFilterImage": "Guided Filter Image",
     "ImageConstant": "Image Constant Color (RGB)",
     "ImageConstantHSV": "Image Constant Color (HSV)",
+    "InstructPixToPixConditioningAdvanced": "InstructPixToPixConditioningAdvanced",
     "JitterImage": "Jitter Image",
     "Keyer": "Keyer",
+    "LatentNormalizeShuffle": "LatentNormalizeShuffle",
     "LatentStats": "Latent Stats",
+    "MedianFilterImage": "Median Filter Image",
     "NormalMapSimple": "Normal Map (Simple)",
     "OffsetLatentImage": "Offset Latent Image",
+    "PrintSigmas": "PrintSigmas",
     "RelightSimple": "Relight (Simple)",
     "RemapRange": "Remap Range",
+    "RestoreDetail": "Restore Detail",
+    "SharpenFilterLatent": "Sharpen Filter (Latent)",
     "ShuffleChannels": "Shuffle Channels",
     "Tonemap": "Tonemap",
     "UnJitterImage": "Un-Jitter Image",
     "UnTonemap": "UnTonemap",
-    "InstructPixToPixConditioningAdvanced": "InstructPixToPixConditioningAdvanced",
-    "LatentNormalizeShuffle": "LatentNormalizeShuffle",
-    "PrintSigmas": "PrintSigmas",
-    "SharpenFilterLatent": "Sharpen Filter (Latent)",
 }
