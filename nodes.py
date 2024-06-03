@@ -408,8 +408,8 @@ class ColorMatchImage:
     CATEGORY = "image/filters"
 
     def batch_normalize(self, images, reference, blur_type, blur_size, factor):
-        t = images.detach().clone()
-        ref = reference.detach().clone()
+        t = images.detach().clone() + 0.1
+        ref = reference.detach().clone() + 0.1
         
         if ref.shape[0] < t.shape[0]:
             ref = ref[0].unsqueeze(0).repeat(t.shape[0], 1, 1, 1)
@@ -426,20 +426,19 @@ class ColorMatchImage:
             d = blur_size * 2 + 1
             
             if blur_type == "blur":
-                blurred = cv_blur_tensor(torch.clamp(t, 0.001, 1), d, d)
-                blurred_ref = cv_blur_tensor(torch.clamp(ref, 0.001, 1), d, d)
+                blurred = cv_blur_tensor(t, d, d)
+                blurred_ref = cv_blur_tensor(ref, d, d)
             elif blur_type == "guidedFilter":
-                t_clamp = torch.clamp(t, 0.001, 1)
-                ref_clamp = torch.clamp(ref, 0.001, 1)
-                blurred = guided_filter_tensor(t_clamp, t_clamp, d, 0.01)
-                blurred_ref = guided_filter_tensor(ref_clamp, ref_clamp, d, 0.01)
+                blurred = guided_filter_tensor(t, t, d, 0.01)
+                blurred_ref = guided_filter_tensor(ref, ref, d, 0.01)
             
             for i in range(t.shape[0]):
                 for c in range(3):
                     t[i,:,:,c] /= blurred[i,:,:,c]
                     t[i,:,:,c] *= blurred_ref[i,:,:,c]
         
-        t = torch.lerp(images, t, factor)
+        t = t - 0.1
+        torch.clamp(torch.lerp(images, t, factor), 0, 1)
         return (t,)
 
 class RestoreDetail:
@@ -462,8 +461,8 @@ class RestoreDetail:
     CATEGORY = "image/filters"
 
     def batch_normalize(self, images, detail, mode, blur_type, blur_size, factor):
-        t = images.detach().clone()
-        ref = detail.detach().clone()
+        t = images.detach().clone() + 0.1
+        ref = detail.detach().clone() + 0.1
         
         if ref.shape[0] < t.shape[0]:
             ref = ref[0].unsqueeze(0).repeat(t.shape[0], 1, 1, 1)
@@ -471,19 +470,18 @@ class RestoreDetail:
         d = blur_size * 2 + 1
         
         if blur_type == "blur":
-            blurred = cv_blur_tensor(torch.clamp(t, 0.001, 1), d, d)
-            blurred_ref = cv_blur_tensor(torch.clamp(ref, 0.001, 1), d, d)
+            blurred = cv_blur_tensor(t, d, d)
+            blurred_ref = cv_blur_tensor(ref, d, d)
         elif blur_type == "guidedFilter":
-            t_clamp = torch.clamp(t, 0.001, 1)
-            ref_clamp = torch.clamp(ref, 0.001, 1)
-            blurred = guided_filter_tensor(ref_clamp, t_clamp, d, 0.01)
-            blurred_ref = guided_filter_tensor(ref_clamp, ref_clamp, d, 0.01)
+            blurred = guided_filter_tensor(t, t, d, 0.01)
+            blurred_ref = guided_filter_tensor(ref, ref, d, 0.01)
         
         if mode == "multiply":
             t = (ref / blurred_ref) * blurred
         else:
             t = (ref - blurred_ref) + blurred
         
+        t = t - 0.1
         t = torch.clamp(torch.lerp(images, t, factor), 0, 1)
         return (t,)
 
@@ -725,6 +723,7 @@ class FrequencyCombine:
                 "high_frequency": ("IMAGE", ),
                 "low_frequency": ("IMAGE", ),
                 "mode": (["subtract", "divide"],),
+                "eps": ("FLOAT", {"default": 0.1, "min": 0.01, "max": 0.99, "step": 0.01}),
             },
         }
 
@@ -733,12 +732,12 @@ class FrequencyCombine:
 
     CATEGORY = "image/filters"
 
-    def filter_image(self, high_frequency, low_frequency, mode):
+    def filter_image(self, high_frequency, low_frequency, mode, eps):
         t = low_frequency.detach().clone()
         if mode == "subtract":
             t = t + high_frequency - 0.5
         else:
-            t = (high_frequency * 2) * (t + 0.01) - 0.01
+            t = (high_frequency * 2) * (t + eps) - eps
         return (torch.clamp(t, 0, 1),)
 
 class FrequencySeparate:
@@ -749,6 +748,7 @@ class FrequencySeparate:
                 "original": ("IMAGE", ),
                 "low_frequency": ("IMAGE", ),
                 "mode": (["subtract", "divide"],),
+                "eps": ("FLOAT", {"default": 0.1, "min": 0.01, "max": 0.99, "step": 0.01}),
             },
         }
 
@@ -758,12 +758,12 @@ class FrequencySeparate:
 
     CATEGORY = "image/filters"
 
-    def filter_image(self, original, low_frequency, mode):
+    def filter_image(self, original, low_frequency, mode, eps):
         t = original.detach().clone()
         if mode == "subtract":
             t = t - low_frequency + 0.5
         else:
-            t = ((t + 0.01) / (low_frequency + 0.01)) * 0.5
+            t = ((t + eps) / (low_frequency + eps)) * 0.5
         return (t,)
 
 class RemapRange:
