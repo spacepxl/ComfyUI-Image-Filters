@@ -1788,6 +1788,37 @@ class PrintSigmas:
         print(sigmas)
         return (sigmas,)
 
+class VisualizeLatents:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"latent": ("LATENT", ),}}
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "visualize"
+
+    CATEGORY = "utils"
+
+    def visualize(self, latent):
+        latents = latent["samples"]
+        batch, channels, height, width = latents.size()
+        
+        latents = latents - latents.mean()
+        latents = latents / latents.std()
+        latents = latents / 10 + 0.5
+        
+        scale = int(channels ** 0.5)
+        vis = torch.zeros(batch, height * scale, width * scale)
+        
+        for i in range(channels):
+            start_h  = (i % scale) * height
+            end_h    = start_h + height
+            start_w  = (i // scale) * width
+            end_w    = start_w + width
+            
+            vis[:, start_h:end_h, start_w:end_w] = latents[:, i]
+        
+        return (vis.unsqueeze(-1).repeat(1, 1, 1, 3),)
+
 NODE_CLASS_MAPPINGS = {
     "AdainFilterLatent": AdainFilterLatent,
     "AdainImage": AdainImage,
@@ -1833,6 +1864,7 @@ NODE_CLASS_MAPPINGS = {
     "Tonemap": Tonemap,
     "UnJitterImage": UnJitterImage,
     "UnTonemap": UnTonemap,
+    "VisualizeLatents": VisualizeLatents,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1880,4 +1912,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Tonemap": "Tonemap",
     "UnJitterImage": "Un-Jitter Image",
     "UnTonemap": "UnTonemap",
+    "VisualizeLatents": "Visualize Latents",
 }
