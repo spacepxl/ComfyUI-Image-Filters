@@ -1819,6 +1819,90 @@ class VisualizeLatents:
         
         return (vis.unsqueeze(-1).repeat(1, 1, 1, 3),)
 
+class GameOfLife:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "width": ("INT", { "default": 32, "min": 8, "max": 1024, "step": 1}),
+                "height": ("INT", { "default": 32, "min": 8, "max": 1024, "step": 1}),
+                "cell_size": ("INT", { "default": 16, "min": 8, "max": 1024, "step": 8}),
+                "seed": ("INT", { "default": 0, "min": 0, "max": 0xffffffffffffffff, "step": 1}),
+                "threshold": ("FLOAT", { "default": 0.8, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "steps": ("INT", { "default": 64, "min": 1, "max": 999999, "step": 1}),
+            },
+            "optional": {
+                "optional_start": ("MASK", ),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK", "MASK", "MASK")
+    RETURN_NAMES = ("image", "mask", "off", "on")
+    FUNCTION = "game"
+
+    CATEGORY = "image/filters"
+
+    def game(self, width, height, cell_size, seed, threshold, steps, optional_start=None):
+        F = torch.nn.functional
+        
+        if optional_start is None:
+            # base random initialization
+            torch.manual_seed(seed)
+            grid = torch.rand(1, 1, height, width)
+        else:
+            grid = optional_start[0].unsqueeze(0).unsqueeze(0)
+            grid = F.interpolate(grid, size=(height, width))
+        
+        grid = (grid > threshold).type(torch.uint8)
+        empty = torch.zeros(1, 1, height, width, dtype=torch.uint8)
+        
+        # neighbor convolution kernel
+        kernel = torch.ones(1, 1, 3, 3, dtype=torch.uint8)
+        kernel[0, 0, 1, 1] = 0
+        
+        game_states = [[], [], []] # grid, turn_off, turn_on
+        game_states[0].append(grid.detach().clone())
+        game_states[1].append(empty.detach().clone())
+        game_states[2].append(empty.detach().clone())
+        for step in range(steps - 1):
+            new_state = grid.detach().clone()
+            neighbors = F.conv2d(F.pad(new_state, pad=(1, 1, 1, 1), mode="circular"), kernel) #, padding="same")
+            
+            # If a cell is ON and has fewer than two neighbors that are ON, it turns OFF
+            new_state[(new_state == 1) == (neighbors < 2)] = 0
+            
+            # If a cell is ON and has either two or three neighbors that are ON, it remains ON.
+            
+            # If a cell is ON and has more than three neighbors that are ON, it turns OFF.
+            new_state[(new_state == 1) == (neighbors > 3)] = 0
+            
+            # If a cell is OFF and has exactly three neighbors that are ON, it turns ON.
+            new_state[(new_state == 0) == (neighbors == 3)] = 1
+            
+            turn_off = ((grid - new_state) == 1).type(torch.uint8)
+            turn_on = ((new_state - grid) == 1).type(torch.uint8)
+            
+            game_states[0].append(new_state.detach().clone())
+            game_states[1].append(turn_off.detach().clone())
+            game_states[2].append(turn_on.detach().clone())
+            
+            grid = new_state
+        
+        def postprocess(tensorlist, to_image=False):
+            game_anim = torch.cat(tensorlist, dim=0).type(torch.float32)
+            game_anim = F.interpolate(game_anim, size=(height * cell_size, width * cell_size))
+            game_anim = torch.squeeze(game_anim, dim=1) # BCHW -> BHW
+            if to_image:
+                game_anim = game_anim.unsqueeze(-1).repeat(1,1,1,3) # BHWC
+            return game_anim
+        
+        image = postprocess(game_states[0], to_image=True)
+        mask = postprocess(game_states[0])
+        off = postprocess(game_states[1])
+        on = postprocess(game_states[2])
+        
+        return (image, mask, off, on)
+
 NODE_CLASS_MAPPINGS = {
     "AdainFilterLatent": AdainFilterLatent,
     "AdainImage": AdainImage,
@@ -1843,6 +1927,7 @@ NODE_CLASS_MAPPINGS = {
     "ExposureAdjust": ExposureAdjust,
     "FrequencyCombine": FrequencyCombine,
     "FrequencySeparate": FrequencySeparate,
+    "GameOfLife": GameOfLife,
     "GuidedFilterAlpha": GuidedFilterAlpha,
     "GuidedFilterImage": GuidedFilterImage,
     "ImageConstant": ImageConstant,
@@ -1891,6 +1976,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ExposureAdjust": "Exposure Adjust",
     "FrequencyCombine": "Frequency Combine",
     "FrequencySeparate": "Frequency Separate",
+    "GameOfLife": "Game Of Life",
     "GuidedFilterAlpha": "(DEPRECATED) Guided Filter Alpha",
     "GuidedFilterImage": "Guided Filter Image",
     "ImageConstant": "Image Constant Color (RGB)",
