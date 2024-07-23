@@ -1236,19 +1236,22 @@ class LatentStats:
 
     def notify(self, latent):
         latents = latent["samples"]
+        channels = latents.size(1)
         width, height = latents.size(3), latents.size(2)
         
         text = ["",]
         text[0] = f"batch size: {latents.size(0)}"
+        text.append(f"channels: {channels}")
         text.append(f"width: {width} ({width * 8})")
         text.append(f"height: {height} ({height * 8})")
         
         cmean = [0,0,0,0]
-        for i in range(4):
+        for i in range(channels):
             minimum = torch.min(latents[:,i,:,:]).item()
             maximum = torch.max(latents[:,i,:,:]).item()
             std_dev, mean = torch.std_mean(latents[:,i,:,:], dim=None)
-            cmean[i] = mean
+            if i < 4:
+                cmean[i] = mean
             
             text.append(f"c{i} mean: {mean:.1f} std_dev: {std_dev:.1f} min: {minimum:.1f} max: {maximum:.1f}")
         
@@ -1953,6 +1956,26 @@ class GameOfLife:
         
         return (image, mask, off, on)
 
+modeltest_code_default = """d = model.model.model_config.unet_config
+for k in d.keys():
+    print(k, d[k])"""
+
+class ModelTest:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+            "model": ("MODEL",),
+            "code": ("STRING", {"multiline": True, "default": modeltest_code_default}),
+            }}
+    RETURN_TYPES = ()
+    FUNCTION = "test"
+    OUTPUT_NODE = True
+    CATEGORY = "utils"
+    
+    def test(self, model, code):
+        exec(code)
+        return ()
+
 NODE_CLASS_MAPPINGS = {
     "AdainFilterLatent": AdainFilterLatent,
     "AdainImage": AdainImage,
@@ -1989,6 +2012,7 @@ NODE_CLASS_MAPPINGS = {
     "LatentNormalizeShuffle": LatentNormalizeShuffle,
     "LatentStats": LatentStats,
     "MedianFilterImage": MedianFilterImage,
+    "ModelTest": ModelTest,
     "NormalMapSimple": NormalMapSimple,
     "OffsetLatentImage": OffsetLatentImage,
     "PrintSigmas": PrintSigmas,
@@ -2039,6 +2063,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LatentNormalizeShuffle": "LatentNormalizeShuffle",
     "LatentStats": "Latent Stats",
     "MedianFilterImage": "Median Filter Image",
+    "ModelTest": "Model Test",
     "NormalMapSimple": "Normal Map (Simple)",
     "OffsetLatentImage": "Offset Latent Image",
     "PrintSigmas": "PrintSigmas",
