@@ -1099,18 +1099,21 @@ class DifferenceChecker:
                 "images1": ("IMAGE", ),
                 "images2": ("IMAGE", ),
                 "multiplier": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 1000.0, "step": 0.01,  "round": 0.01}),
+                "print_MAE": ("BOOLEAN", {"default": False}),
             },
         }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "difference_checker"
-
+    OUTPUT_NODE = True
     CATEGORY = "image/filters"
 
-    def difference_checker(self, images1, images2, multiplier):
+    def difference_checker(self, images1, images2, multiplier, print_MAE):
         t = copy.deepcopy(images1)
-        t = torch.abs(images1 - images2) * multiplier
-        return (torch.clamp(t, min=0, max=1),)
+        t = torch.abs(images1 - images2)
+        if print_MAE:
+            print(f"MAE = {torch.mean(t)}")
+        return (torch.clamp(t * multiplier, min=0, max=1),)
 
 class ImageConstant:
     def __init__(self, device="cpu"):
