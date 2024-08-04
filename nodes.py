@@ -1979,6 +1979,46 @@ class ModelTest:
         exec(code)
         return ()
 
+class ConditioningSubtract:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+            "cond_orig": ("CONDITIONING", ),
+            "cond_subtract": ("CONDITIONING", ),
+            "subtract_strength": ("FLOAT", {"default": 1.0, "step": 0.01}),
+            }}
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "addWeighted"
+
+    CATEGORY = "conditioning"
+
+    def addWeighted(self, cond_orig, cond_subtract, subtract_strength):
+        out = []
+
+        if len(cond_subtract) > 1:
+            logging.warning("Warning: ConditioningSubtract cond_subtract contains more than 1 cond, only the first one will actually be applied to cond_orig.")
+
+        cond_from = cond_subtract[0][0]
+        pooled_output_from = cond_subtract[0][1].get("pooled_output", None)
+
+        for i in range(len(cond_orig)):
+            t1 = cond_orig[i][0]
+            pooled_output_to = cond_orig[i][1].get("pooled_output", pooled_output_from)
+            t0 = cond_from[:,:t1.shape[1]]
+            if t0.shape[1] < t1.shape[1]:
+                t0 = torch.cat([t0] + [torch.zeros((1, (t1.shape[1] - t0.shape[1]), t1.shape[2]))], dim=1)
+
+            tw = t1 - torch.mul(t0, subtract_strength)
+            t_to = cond_orig[i][1].copy()
+            if pooled_output_from is not None and pooled_output_to is not None:
+                t_to["pooled_output"] = pooled_output_to - torch.mul(pooled_output_from, subtract_strength)
+            elif pooled_output_from is not None:
+                t_to["pooled_output"] = pooled_output_from
+
+            n = [tw, t_to]
+            out.append(n)
+        return (out, )
+
 NODE_CLASS_MAPPINGS = {
     "AdainFilterLatent": AdainFilterLatent,
     "AdainImage": AdainImage,
@@ -1996,6 +2036,7 @@ NODE_CLASS_MAPPINGS = {
     "BlurMaskFast": BlurMaskFast,
     "ClampOutliers": ClampOutliers,
     "ColorMatchImage": ColorMatchImage,
+    "ConditioningSubtract": ConditioningSubtract,
     "ConvertNormals": ConvertNormals,
     "DepthToNormals": DepthToNormals,
     "DifferenceChecker": DifferenceChecker,
@@ -2047,6 +2088,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BlurMaskFast": "Blur Mask (Fast)",
     "ClampOutliers": "Clamp Outliers",
     "ColorMatchImage": "Color Match Image",
+    "ConditioningSubtract": "ConditioningSubtract",
     "ConvertNormals": "Convert Normals",
     "DepthToNormals": "Depth To Normals",
     "DifferenceChecker": "Difference Checker",
