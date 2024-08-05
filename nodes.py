@@ -2019,6 +2019,35 @@ class ConditioningSubtract:
             out.append(n)
         return (out, )
 
+class Noise_CustomNoise:
+    def __init__(self, noise_latent):
+        self.seed = 0
+        self.noise_latent = noise_latent
+
+    def generate_noise(self, input_latent):
+        return self.noise_latent.detach().clone().cpu()
+
+class CustomNoise:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":{
+            "noise": ("LATENT",),
+            }}
+
+    RETURN_TYPES = ("NOISE",)
+    FUNCTION = "get_noise"
+    CATEGORY = "sampling/custom_sampling/noise"
+
+    def get_noise(self, noise):
+        noise_latent = noise["samples"].detach().clone()
+        
+        for batch in range(noise_latent.size(0)):
+            for channel in range(noise_latent.size(1)):
+                mean, std = torch.mean(noise_latent[batch, channel]), torch.std(noise_latent[batch, channel])
+                noise_latent[batch, channel] = (noise_latent[batch, channel] - mean) / std
+        
+        return (Noise_CustomNoise(noise_latent),)
+
 NODE_CLASS_MAPPINGS = {
     "AdainFilterLatent": AdainFilterLatent,
     "AdainImage": AdainImage,
@@ -2038,6 +2067,7 @@ NODE_CLASS_MAPPINGS = {
     "ColorMatchImage": ColorMatchImage,
     "ConditioningSubtract": ConditioningSubtract,
     "ConvertNormals": ConvertNormals,
+    "CustomNoise": CustomNoise,
     "DepthToNormals": DepthToNormals,
     "DifferenceChecker": DifferenceChecker,
     "DilateErodeMask": DilateErodeMask,
@@ -2090,6 +2120,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ColorMatchImage": "Color Match Image",
     "ConditioningSubtract": "ConditioningSubtract",
     "ConvertNormals": "Convert Normals",
+    "CustomNoise": "CustomNoise",
     "DepthToNormals": "Depth To Normals",
     "DifferenceChecker": "Difference Checker",
     "DilateErodeMask": "Dilate/Erode Mask",
