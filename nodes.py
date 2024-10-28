@@ -1345,32 +1345,36 @@ class ExposureAdjust:
                 "stops": ("FLOAT", {"default": 0.0, "min": -100, "max": 100, "step": 0.01}),
                 "input_mode": (["sRGB", "linear"],),
                 "output_mode": (["sRGB", "linear"],),
-                "use_tonemap": ("BOOLEAN", {"default": False}),
+                "tonemap": (["linear", "Reinhard", "linlog"], {"default": "Reinhard"}),
                 "tonemap_scale": ("FLOAT", {"default": 1, "min": 0.1, "max": 10, "step": 0.01}),
             },
         }
 
     RETURN_TYPES = ("IMAGE",)
-    FUNCTION = "apply"
+    FUNCTION = "adjust_exposure"
 
     CATEGORY = "image/filters"
 
-    def apply(self, images, stops, input_mode, output_mode, use_tonemap, tonemap_scale):
+    def adjust_exposure(self, images, stops, input_mode, output_mode, tonemap, tonemap_scale):
         t = images.detach().clone().cpu().numpy().astype(np.float32)
         
         if input_mode == "sRGB":
-            sRGBtoLinear(t[:,:,:,:3])
+            sRGBtoLinear(t[...,:3])
         
-        if use_tonemap:
-            tonemapToLinear(t[:,:,:,:3], tonemap_scale)
+        if tonemap == "linlog":
+            tonemapToLinear(t[...,:3], tonemap_scale)
+        elif tonemap == "Reinhard":
+            t[...,:3] = -t[...,:3] / (t[...,:3] - 1)
         
-        exposure(t[:,:,:,:3], stops)
+        exposure(t[...,:3], stops)
         
-        if use_tonemap:
-            linearToTonemap(t[:,:,:,:3], tonemap_scale)
+        if tonemap == "linlog":
+            linearToTonemap(t[...,:3], tonemap_scale)
+        elif tonemap == "Reinhard":
+            t[...,:3] = t[...,:3] / (t[...,:3] + 1)
         
         if output_mode == "sRGB":
-            linearToSRGB(t[:,:,:,:3])
+            linearToSRGB(t[...,:3])
             t = np.clip(t, 0, 1)
         
         t = torch.from_numpy(t)
