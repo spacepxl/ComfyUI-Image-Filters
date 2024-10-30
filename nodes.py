@@ -767,9 +767,6 @@ class FrequencySeparate:
         return (t,)
 
 class RemapRange:
-    def __init__(self):
-        pass
-
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -804,6 +801,36 @@ class RemapRange:
         i_dup = np.clip((i_dup - bp) * scale, 0.0, 1.0)
         
         return (torch.from_numpy(i_dup),)
+
+class ClampImage:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "blackpoint": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.001
+                }),
+                "whitepoint": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.001
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "clamp_image"
+
+    CATEGORY = "image/filters"
+
+    def clamp_image(self, image: torch.Tensor, blackpoint: float, whitepoint: float):
+        clamped_image = torch.clamp(torch.nan_to_num(image.detach().clone()), min=blackpoint, max=whitepoint)
+        return (clamped_image,)
 
 Channel_List = ["red", "green", "blue", "alpha", "white", "black"]
 Alpha_List = ["red", "green", "blue", "alpha", "white", "black", "none"]
@@ -1365,6 +1392,7 @@ class ExposureAdjust:
         if tonemap == "linlog":
             tonemapToLinear(t[...,:3], tonemap_scale)
         elif tonemap == "Reinhard":
+            t = np.clip(t, 0, 0.999)
             t[...,:3] = -t[...,:3] / (t[...,:3] - 1)
         
         exposure(t[...,:3], stops)
@@ -2068,6 +2096,7 @@ NODE_CLASS_MAPPINGS = {
     "BilateralFilterImage": BilateralFilterImage,
     "BlurImageFast": BlurImageFast,
     "BlurMaskFast": BlurMaskFast,
+    "ClampImage": ClampImage,
     "ClampOutliers": ClampOutliers,
     "ColorMatchImage": ColorMatchImage,
     "ConditioningSubtract": ConditioningSubtract,
@@ -2121,6 +2150,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BilateralFilterImage": "Bilateral Filter Image",
     "BlurImageFast": "Blur Image (Fast)",
     "BlurMaskFast": "Blur Mask (Fast)",
+    "ClampImage": "Clamp Image",
     "ClampOutliers": "Clamp Outliers",
     "ColorMatchImage": "Color Match Image",
     "ConditioningSubtract": "ConditioningSubtract",
