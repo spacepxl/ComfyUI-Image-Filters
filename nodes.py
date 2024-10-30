@@ -1199,8 +1199,9 @@ class RelightSimple:
             "required": {
                 "image": ("IMAGE",),
                 "normals": ("IMAGE",),
-                "x_dir": ("FLOAT", {"default": 0.0, "min": -1.5, "max": 1.5, "step": 0.01}),
-                "y_dir": ("FLOAT", {"default": 0.0, "min": -1.5, "max": 1.5, "step": 0.01}),
+                "x": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.001}),
+                "y": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.001}),
+                "z": ("FLOAT", {"default": 1.0, "min": -1.0, "max": 1.0, "step": 0.001}),
                 "brightness": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100, "step": 0.01}),
             },
         }
@@ -1210,12 +1211,12 @@ class RelightSimple:
 
     CATEGORY = "image/filters"
 
-    def relight(self, image, normals, x_dir, y_dir, brightness):
+    def relight(self, image, normals, x, y, z, brightness):
         if image.shape[0] != normals.shape[0]:
             raise Exception("Batch size for image and normals must match")
         norm = normals.detach().clone() * 2 - 1
         norm = torch.nn.functional.interpolate(norm.movedim(-1,1), size=(image.shape[1], image.shape[2]), mode='bilinear').movedim(1,-1)
-        light = torch.tensor([x_dir, y_dir, abs(1 - math.sqrt(x_dir ** 2 + y_dir ** 2) * 0.7)])
+        light = torch.tensor([x, y, z])
         light = torch.nn.functional.normalize(light, dim=0)
         
         diffuse = norm[:,:,:,0] * light[0] + norm[:,:,:,1] * light[1] + norm[:,:,:,2] * light[2]
