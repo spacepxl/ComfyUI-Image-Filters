@@ -12,6 +12,7 @@ except ImportError:
     print("\033[33mUnable to import guidedFilter, make sure you have only opencv-contrib-python or run the import_error_install.bat script\033[m")
 
 import comfy.model_management
+import node_helpers
 from comfy.utils import ProgressBar
 from comfy_extras.nodes_post_processing import gaussian_kernel
 from .raft import *
@@ -1816,6 +1817,82 @@ class InstructPixToPixConditioningAdvanced:
             out.append(c)
         return (out[0], out[1], negative, out_latent)
 
+class InpaintConditionEncode:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "vae": ("VAE", ),
+                "pixels": ("IMAGE", ),
+                "mask": ("MASK", ),
+            },}
+
+    RETURN_TYPES = ("INPAINT_CONDITION",)
+    RETURN_NAMES = ("inpaint_condition",)
+    FUNCTION = "encode"
+    CATEGORY = "conditioning/inpaint"
+
+    def encode(self, vae, pixels, mask):
+        x = (pixels.shape[1] // 8) * 8
+        y = (pixels.shape[2] // 8) * 8
+        mask = torch.nn.functional.interpolate(mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), size=(pixels.shape[1], pixels.shape[2]), mode="bilinear")
+
+        pixels = pixels.clone()
+        if pixels.shape[1] != x or pixels.shape[2] != y:
+            x_offset = (pixels.shape[1] % 8) // 2
+            y_offset = (pixels.shape[2] % 8) // 2
+            pixels = pixels[:,x_offset:x + x_offset, y_offset:y + y_offset,:]
+            mask = mask[:,:,x_offset:x + x_offset, y_offset:y + y_offset]
+
+        m = (1.0 - mask.round()).squeeze(1)
+        for i in range(3):
+            pixels[:,:,:,i] -= 0.5
+            pixels[:,:,:,i] *= m
+            pixels[:,:,:,i] += 0.5
+        concat_latent = vae.encode(pixels)
+        
+        return ({"concat_latent_image": concat_latent, "concat_mask": mask},)
+
+class InpaintConditionApply:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "positive": ("CONDITIONING", ),
+                "negative": ("CONDITIONING", ),
+                "inpaint_condition": ("INPAINT_CONDITION", ),
+                "noise_mask": ("BOOLEAN", {"default": False, "tooltip": "Add a noise mask to the latent so sampling will only happen within the mask. Might improve results or completely break things depending on the model."}),
+                },
+            "optional": {
+                "latents_optional": ("LATENT",),
+            },}
+
+    RETURN_TYPES = ("CONDITIONING","CONDITIONING","LATENT")
+    RETURN_NAMES = ("positive", "negative", "latent")
+    FUNCTION = "encode"
+
+    CATEGORY = "conditioning/inpaint"
+
+    def encode(self, positive, negative, inpaint_condition, noise_mask=True, latents_optional=None):
+        concat_latent = inpaint_condition["concat_latent_image"]
+        concat_mask = inpaint_condition["concat_mask"]
+        
+        if latents_optional is not None:
+            out_latent = latents_optional.copy()
+        else:
+            out_latent = {}
+            out_latent["samples"] = torch.zeros_like(concat_latent)
+        
+        if noise_mask:
+            out_latent["noise_mask"] = concat_mask
+
+        out = []
+        for conditioning in [positive, negative]:
+            c = node_helpers.conditioning_set_values(conditioning, {"concat_latent_image": concat_latent,
+                                                                    "concat_mask": concat_mask})
+            out.append(c)
+        return (out[0], out[1], out_latent)
+
 class LatentNormalizeShuffle:
     def __init__(self):
         pass
@@ -2114,6 +2191,8 @@ NODE_CLASS_MAPPINGS = {
     "GuidedFilterImage": GuidedFilterImage,
     "ImageConstant": ImageConstant,
     "ImageConstantHSV": ImageConstantHSV,
+    "InpaintConditionApply": InpaintConditionApply,
+    "InpaintConditionEncode": InpaintConditionEncode,
     "InstructPixToPixConditioningAdvanced": InstructPixToPixConditioningAdvanced,
     "JitterImage": JitterImage,
     "Keyer": Keyer,
@@ -2168,6 +2247,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GuidedFilterImage": "Guided Filter Image",
     "ImageConstant": "Image Constant Color (RGB)",
     "ImageConstantHSV": "Image Constant Color (HSV)",
+    "InpaintConditionApply": "Inpaint Condition Apply",
+    "InpaintConditionEncode": "Inpaint Condition Encode",
     "InstructPixToPixConditioningAdvanced": "InstructPixToPixConditioningAdvanced",
     "JitterImage": "Jitter Image",
     "Keyer": "Keyer",
