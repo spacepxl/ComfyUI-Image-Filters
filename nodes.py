@@ -2231,7 +2231,7 @@ class MergeFramesByIndex:
             for i in range(len(new_masks)):
                 new_masks[i] = orig_masks[min(i, len(orig_masks) - 1)].detach().clone()
         
-        for i, frame in enumerate(set(index_list)):
+        for i, frame in enumerate(index_list):
             frame_mask = masks[i] if masks is not None else torch.ones_like(new_masks[i])
             new_images[frame] *= (1 - frame_mask[..., None])
             new_images[frame] += images[i].detach().clone() * frame_mask[..., None]
