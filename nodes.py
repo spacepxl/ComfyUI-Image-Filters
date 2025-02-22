@@ -2150,12 +2150,8 @@ class CustomNoise:
 
     def get_noise(self, noise):
         noise_latent = noise["samples"].detach().clone()
-        
-        for batch in range(noise_latent.size(0)):
-            for channel in range(noise_latent.size(1)):
-                mean, std = torch.mean(noise_latent[batch, channel]), torch.std(noise_latent[batch, channel])
-                noise_latent[batch, channel] = (noise_latent[batch, channel] - mean) / std
-        
+        std, mean = torch.std_mean(noise_latent, dim=(-2, -1), keepdim=True)
+        noise_latent = (noise_latent - mean) / std
         return (Noise_CustomNoise(noise_latent),)
 
 class ExtractNFrames:
