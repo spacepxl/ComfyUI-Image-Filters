@@ -115,6 +115,11 @@ def exposure(npArray, stops):
     more = npArray > 0
     npArray[more] *= pow(2, stops)
 
+def randn_like_g(x, generator=None):
+    device = generator.device if generator is not None else x.device
+    r = torch.randn(x.size(), generator=generator, dtype=x.dtype, layout=x.layout, device=device)
+    return r.to(x.device)
+
 class AlphaClean:
     def __init__(self):
         pass
@@ -1939,6 +1944,30 @@ class LatentNormalizeShuffle:
         latents_copy["samples"] = t
         return (latents_copy,)
 
+class RandnLikeLatent:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents": ("LATENT", ),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True, "tooltip": "The random seed used for creating the noise."}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "generate"
+
+    CATEGORY = "latent/filters"
+
+    def generate(self, latents, seed):
+        latents_copy = copy.deepcopy(latents)
+        gen_cpu = torch.Generator(device="cpu").manual_seed(seed)
+        latents_copy["samples"] = randn_like_g(latents_copy["samples"], generator=gen_cpu)
+        return (latents_copy,)
+
 class PrintSigmas:
     @classmethod
     def INPUT_TYPES(s):
@@ -2275,6 +2304,7 @@ NODE_CLASS_MAPPINGS = {
     "JitterImage": JitterImage,
     "Keyer": Keyer,
     "LatentNormalizeShuffle": LatentNormalizeShuffle,
+    "RandnLikeLatent": RandnLikeLatent,
     "LatentStats": LatentStats,
     "MedianFilterImage": MedianFilterImage,
     "MergeFramesByIndex": MergeFramesByIndex,
@@ -2333,6 +2363,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JitterImage": "Jitter Image",
     "Keyer": "Keyer",
     "LatentNormalizeShuffle": "LatentNormalizeShuffle",
+    "RandnLikeLatent": "RandnLikeLatent",
     "LatentStats": "Latent Stats",
     "MedianFilterImage": "Median Filter Image",
     "MergeFramesByIndex": "Merge Frames By Index",
