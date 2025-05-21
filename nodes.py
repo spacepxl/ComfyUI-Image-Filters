@@ -1,6 +1,7 @@
 import math
 import copy
 import torch
+import torch.nn.functional as F
 import numpy as np
 import cv2
 from pymatting import estimate_alpha_cf, estimate_foreground_ml, fix_trimap
@@ -22,10 +23,10 @@ MAX_RESOLUTION=8192
 # gaussian blur a tensor image batch in format [B x H x W x C] on H/W (spatial, per-image, per-channel)
 def cv_blur_tensor(images, dx, dy):
     if min(dx, dy) > 100:
-        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        np_img = F.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
         for index, image in enumerate(np_img):
             np_img[index] = cv2.GaussianBlur(image, (dx // 20 * 2 + 1, dy // 20 * 2 + 1), 0)
-        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
+        return F.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
     else:
         np_img = images.detach().clone().cpu().numpy()
         for index, image in enumerate(np_img):
@@ -35,11 +36,11 @@ def cv_blur_tensor(images, dx, dy):
 # guided filter a tensor image batch in format [B x H x W x C] on H/W (spatial, per-image, per-channel)
 def guided_filter_tensor(ref, images, d, s):
     if d > 100:
-        np_img = torch.nn.functional.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
-        np_ref = torch.nn.functional.interpolate(ref.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        np_img = F.interpolate(images.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
+        np_ref = F.interpolate(ref.detach().clone().movedim(-1,1), scale_factor=0.1, mode='bilinear').movedim(1,-1).cpu().numpy()
         for index, image in enumerate(np_img):
             np_img[index] = guidedFilter(np_ref[index], image, d // 20 * 2 + 1, s)
-        return torch.nn.functional.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
+        return F.interpolate(torch.from_numpy(np_img).movedim(-1,1), size=(images.shape[1], images.shape[2]), mode='bilinear').movedim(1,-1)
     else:
         np_img = images.detach().clone().cpu().numpy()
         np_ref = ref.cpu().numpy()
@@ -303,7 +304,7 @@ class BetterFilmGrain:
         grain += 1
         grain = grain * saturation + grain[:,:,:,1].unsqueeze(3).repeat(1,1,1,3) * (1 - saturation)
         
-        grain = torch.nn.functional.interpolate(grain.movedim(-1,1), size=(t.shape[1], t.shape[2]), mode='bilinear').movedim(1,-1)
+        grain = F.interpolate(grain.movedim(-1,1), size=(t.shape[1], t.shape[2]), mode='bilinear').movedim(1,-1)
         t[:,:,:,:3] = torch.clip((1 - (1 - t[:,:,:,:3]) * grain) * (1 - toe) + toe, 0, 1)
         return(t,)
 
@@ -1248,9 +1249,9 @@ class RelightSimple:
         if image.shape[0] != normals.shape[0]:
             raise Exception("Batch size for image and normals must match")
         norm = normals.detach().clone() * 2 - 1
-        norm = torch.nn.functional.interpolate(norm.movedim(-1,1), size=(image.shape[1], image.shape[2]), mode='bilinear').movedim(1,-1)
+        norm = F.interpolate(norm.movedim(-1,1), size=(image.shape[1], image.shape[2]), mode='bilinear').movedim(1,-1)
         light = torch.tensor([x, y, z])
-        light = torch.nn.functional.normalize(light, dim=0)
+        light = F.normalize(light, dim=0)
         
         diffuse = norm[:,:,:,0] * light[0] + norm[:,:,:,1] * light[1] + norm[:,:,:,2] * light[2]
         diffuse = torch.clip(diffuse.unsqueeze(3).repeat(1,1,1,3), 0, 1)
@@ -1455,7 +1456,7 @@ class ConvertNormals:
             else:
                 fill = optional_fill.detach().clone()
                 if fill.shape[1:3] != t.shape[1:3]:
-                    fill = torch.nn.functional.interpolate(fill.movedim(-1,1), size=(t.shape[1], t.shape[2]), mode='bilinear').movedim(1,-1)
+                    fill = F.interpolate(fill.movedim(-1,1), size=(t.shape[1], t.shape[2]), mode='bilinear').movedim(1,-1)
                 if fill.shape[0] != t.shape[0]:
                     fill = fill[0].unsqueeze(0).expand(t.shape[0], -1, -1, -1)
                 t[:,:,:,:3] += fill[:,:,:,:3] * key.unsqueeze(3).expand(-1, -1, -1, 3)
@@ -1463,7 +1464,7 @@ class ConvertNormals:
         t[:,:,:,:2] = (t[:,:,:,:2] - 0.5) * scale_XY + 0.5
         
         if normalize:
-            t[:,:,:,:3] = torch.nn.functional.normalize(t[:,:,:,:3] * 2 - 1, dim=3) / 2 + 0.5
+            t[:,:,:,:3] = F.normalize(t[:,:,:,:3] * 2 - 1, dim=3) / 2 + 0.5
         
         if output_mode == "BAE":
             t[:,:,:,0] = 1 - t[:,:,:,0] # invert R
@@ -1519,7 +1520,7 @@ class NormalMapSimple:
         t[:,:,:,2] = 1
         t = torch.from_numpy(t)
         t[:,:,:,:2] *= scale_XY
-        t[:,:,:,:3] = torch.nn.functional.normalize(t[:,:,:,:3], dim=3) / 2 + 0.5
+        t[:,:,:,:3] = F.normalize(t[:,:,:,:3], dim=3) / 2 + 0.5
         return (t,)
 
 class DepthToNormals:
@@ -1542,8 +1543,8 @@ class DepthToNormals:
     def normal_map(self, depth, scale, output_mode):
         kernel_x = torch.Tensor([[0,0,0],[1,0,-1],[0,0,0]]).unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1)
         kernel_y = torch.Tensor([[0,1,0],[0,0,0],[0,-1,0]]).unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1)
-        conv2d = torch.nn.functional.conv2d
-        pad = torch.nn.functional.pad
+        conv2d = F.conv2d
+        pad = F.pad
         
         size_x = depth.size(2)
         size_y = depth.size(1)
@@ -1560,7 +1561,7 @@ class DepthToNormals:
         grad_y = conv2d(pad(position_map, (1,1,1,1), mode='replicate'), kernel_y, padding='valid', groups=3)
         
         cross_product = torch.cross(grad_x, grad_y, dim=1)
-        normals = torch.nn.functional.normalize(cross_product)
+        normals = F.normalize(cross_product)
         normals[:, 1] *= -1
         
         if output_mode != "Standard":
@@ -1659,12 +1660,12 @@ class JitterImage:
         theta = jitter_matrix.detach().clone().to(t.device)
         theta[:,0,2] *= jitter_scale * 2 / t.shape[3]
         theta[:,1,2] *= jitter_scale * 2 / t.shape[2]
-        affine = torch.nn.functional.affine_grid(theta, torch.Size([9, t.shape[1], t.shape[2], t.shape[3]]))
+        affine = F.affine_grid(theta, torch.Size([9, t.shape[1], t.shape[2], t.shape[3]]))
         
         batch = []
         for i in range(t.shape[0]):
             jb = t[i].repeat(9,1,1,1)
-            jb = torch.nn.functional.grid_sample(jb, affine, mode='bilinear', padding_mode='border', align_corners=None)
+            jb = F.grid_sample(jb, affine, mode='bilinear', padding_mode='border', align_corners=None)
             batch.append(jb)
         
         t = torch.cat(batch, dim=0).movedim(1,-1) # [B x H x W x C]
@@ -1705,11 +1706,11 @@ class UnJitterImage:
             theta = jitter_matrix.detach().clone().to(t.device)
             theta[:,0,2] *= jitter_scale * -2 / t.shape[3]
             theta[:,1,2] *= jitter_scale * -2 / t.shape[2]
-            affine = torch.nn.functional.affine_grid(theta, torch.Size([9, t.shape[1], t.shape[2], t.shape[3]]))
+            affine = F.affine_grid(theta, torch.Size([9, t.shape[1], t.shape[2], t.shape[3]]))
             batch = []
             for i in range(t.shape[0] // 9):
                 jb = t[i*9:i*9+9]
-                jb = torch.nn.functional.grid_sample(jb, affine, mode='bicubic', padding_mode='border', align_corners=None)
+                jb = F.grid_sample(jb, affine, mode='bicubic', padding_mode='border', align_corners=None)
                 batch.append(jb)
             t = torch.cat(batch, dim=0)
         
@@ -1840,7 +1841,7 @@ class InpaintConditionEncode:
     def encode(self, vae, pixels, mask):
         x = (pixels.shape[1] // 8) * 8
         y = (pixels.shape[2] // 8) * 8
-        mask = torch.nn.functional.interpolate(mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), size=(pixels.shape[1], pixels.shape[2]), mode="bilinear")
+        mask = F.interpolate(mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), size=(pixels.shape[1], pixels.shape[2]), mode="bilinear")
 
         pixels = pixels.clone()
         if pixels.shape[1] != x or pixels.shape[2] != y:
@@ -1926,7 +1927,7 @@ class LatentNormalizeShuffle:
             d = flatten * 2 + 1
             channels = t.shape[1]
             kernel = gaussian_kernel(d, 1, device=t.device).repeat(channels, 1, 1).unsqueeze(1)
-            t_blurred = torch.nn.functional.conv2d(t, kernel, padding='same', groups=channels)
+            t_blurred = F.conv2d(t, kernel, padding='same', groups=channels)
             t = t - t_blurred
         
         if normalize:
@@ -2264,6 +2265,26 @@ class MergeFramesByIndex:
         
         return (new_images, new_masks)
 
+class Hunyuan3Dv2LatentUpscaleBy:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "samples": ("LATENT",),
+                "scale_by": ("FLOAT", {"default": 2.0, "min": 0.01, "max": 8.0, "step": 0.01}),
+            },
+        }
+    
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "upscale"
+    CATEGORY = "latent/filters"
+
+    def upscale(self, samples, scale_by):
+        s = samples.copy()
+        size = round(samples["samples"].shape[-1] * scale_by)
+        s["samples"] = F.interpolate(samples["samples"], size=(size,), mode="nearest-exact")
+        return (s,)
+
 NODE_CLASS_MAPPINGS = {
     "AdainFilterLatent": AdainFilterLatent,
     "AdainImage": AdainImage,
@@ -2296,6 +2317,7 @@ NODE_CLASS_MAPPINGS = {
     "GameOfLife": GameOfLife,
     "GuidedFilterAlpha": GuidedFilterAlpha,
     "GuidedFilterImage": GuidedFilterImage,
+    "Hunyuan3Dv2LatentUpscaleBy": Hunyuan3Dv2LatentUpscaleBy,
     "ImageConstant": ImageConstant,
     "ImageConstantHSV": ImageConstantHSV,
     "InpaintConditionApply": InpaintConditionApply,
@@ -2355,6 +2377,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "GameOfLife": "Game Of Life",
     "GuidedFilterAlpha": "(DEPRECATED) Guided Filter Alpha",
     "GuidedFilterImage": "Guided Filter Image",
+    "Hunyuan3Dv2LatentUpscaleBy": "Upscale Hunyuan3Dv2 Latent By",
     "ImageConstant": "Image Constant Color (RGB)",
     "ImageConstantHSV": "Image Constant Color (HSV)",
     "InpaintConditionApply": "Inpaint Condition Apply",
