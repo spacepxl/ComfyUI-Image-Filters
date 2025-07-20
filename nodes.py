@@ -2285,6 +2285,51 @@ class Hunyuan3Dv2LatentUpscaleBy:
         s["samples"] = F.interpolate(samples["samples"], size=(size,), mode="nearest-exact")
         return (s,)
 
+class PackVideoMask:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "mask": ("MASK",),
+                "blend_mode": (["max", "min", "average"], {"default": "max"}),
+                "causal": ("BOOLEAN", {"default": True, "tooltip": "First latent frame is a single frame"}),
+                "stride": ("INT", {"default": 4, "min": 1, "tooltip": "downsampling factor to match VAE, ie 4 for Wan, 8 for LTXV"}),
+            },
+        }
+
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "pack_mask"
+    CATEGORY = "mask/filters"
+
+    def pack_mask(self, mask, blend_mode, causal, stride):
+        packed_mask = mask.detach().clone()
+        
+        # repeat first frame to match stride
+        if causal:
+            dup_first_frame = packed_mask[0].unsqueeze(0).repeat(stride - 1, 1, 1)
+            packed_mask = torch.cat([dup_first_frame, packed_mask], dim=0)
+        
+        # repeat last frame to match stride
+        remainder = packed_mask.shape[0] % stride
+        if remainder > 0:
+            dup_last_frame = packed_mask[-1].unsqueeze(0).repeat(stride - remainder, 1, 1)
+            packed_mask = torch.cat([packed_mask, dup_last_frame], dim=0)
+        
+        # shuffle every n frame chunk to channels
+        B, H, W = packed_mask.shape
+        packed_mask = packed_mask.reshape(B // stride, stride, H, W)
+        
+        # squash channels
+        if blend_mode == "max":
+            squashed_mask = packed_mask.max(dim=1).values
+        elif blend_mode == "min":
+            squashed_mask = packed_mask.min(dim=1).values
+        else: # average
+            squashed_mask = packed_mask.mean(dim=1)
+        
+        return (squashed_mask,)
+
+
 NODE_CLASS_MAPPINGS = {
     "AdainFilterLatent": AdainFilterLatent,
     "AdainImage": AdainImage,
@@ -2333,6 +2378,7 @@ NODE_CLASS_MAPPINGS = {
     "ModelTest": ModelTest,
     "NormalMapSimple": NormalMapSimple,
     "OffsetLatentImage": OffsetLatentImage,
+    "PackVideoMask": PackVideoMask,
     "PrintSigmas": PrintSigmas,
     "RelightSimple": RelightSimple,
     "RemapRange": RemapRange,
@@ -2393,7 +2439,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ModelTest": "Model Test",
     "NormalMapSimple": "Normal Map (Simple)",
     "OffsetLatentImage": "Offset Latent Image",
-    "PrintSigmas": "PrintSigmas",
+    "PackVideoMask": "Pack Video Mask",
+    "PrintSigmas": "Print Sigmas",
     "RelightSimple": "Relight (Simple)",
     "RemapRange": "Remap Range",
     "RestoreDetail": "Restore Detail",
