@@ -121,49 +121,26 @@ def randn_like_g(x, generator=None):
     r = torch.randn(x.size(), generator=generator, dtype=x.dtype, layout=x.layout, device=device)
     return r.to(x.device)
 
-class AlphaClean:
-    def __init__(self):
-        pass
 
+class AlphaClean:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "images": ("IMAGE",),
-                "radius": ("INT", {
-                    "default": 8,
-                    "min": 1,
-                    "max": 64,
-                    "step": 1
-                }),
-                "fill_holes": ("INT", {
-                    "default": 1,
-                    "min": 0,
-                    "max": 16,
-                    "step": 1
-                }),
-                "white_threshold": ("FLOAT", {
-                    "default": 0.9,
-                    "min": 0.01,
-                    "max": 1.0,
-                    "step": 0.01
-                }),
-                "extra_clip": ("FLOAT", {
-                    "default": 0.98,
-                    "min": 0.01,
-                    "max": 1.0,
-                    "step": 0.01
-                }),
+                "radius": ("INT", {"default": 8, "min": 1, "max": 64, "step": 1}),
+                "fill_holes": ("INT", {"default": 1, "min": 0, "max": 16, "step": 1}),
+                "white_threshold": ("FLOAT", {"default": 0.9, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "extra_clip": ("FLOAT", {"default": 0.98, "min": 0.01, "max": 1.0, "step": 0.01}),
             },
         }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "alpha_clean"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
+    DEPRECATED = True
 
     def alpha_clean(self, images: torch.Tensor, radius: int, fill_holes: int, white_threshold: float, extra_clip: float):
-        
         d = radius * 2 + 1
         i_dup = copy.deepcopy(images.cpu().numpy())
         
@@ -196,40 +173,68 @@ class AlphaClean:
         
         return (torch.from_numpy(i_dup),)
 
-class AlphaMatte:
-    def __init__(self):
-        pass
 
+class MaskClean:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "mask": ("MASK",),
+                "radius": ("INT", {"default": 8, "min": 1, "max": 64, "step": 1}),
+                "fill_holes": ("INT", {"default": 1, "min": 0, "max": 16, "step": 1}),
+                "white_threshold": ("FLOAT", {"default": 0.9, "min": 0.001, "max": 1.0, "step": 0.001}),
+                "extra_clip": ("FLOAT", {"default": 0.98, "min": 0.001, "max": 1.0, "step": 0.001}),
+            },
+        }
+
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "alpha_clean"
+    CATEGORY = "Image-Filters/mask"
+
+    def alpha_clean(self, mask, radius, fill_holes, white_threshold, extra_clip):
+        d = radius * 2 + 1
+        i_dup = mask.cpu().numpy()
+        
+        for index, image in enumerate(i_dup):
+            cleaned = cv2.bilateralFilter(image, 9, 0.05, 8)
+            
+            alpha = np.clip((image - white_threshold) / (1 - white_threshold), 0, 1)
+            rgb = image * alpha
+            
+            alpha = cv2.GaussianBlur(alpha, (d,d), 0) * 0.99 + np.average(alpha) * 0.01
+            rgb = cv2.GaussianBlur(rgb, (d,d), 0) * 0.99 + np.average(rgb) * 0.01
+            
+            rgb = rgb / np.clip(alpha, 0.00001, 1)
+            rgb = rgb * extra_clip
+            
+            cleaned = np.clip(cleaned / rgb, 0, 1)
+            
+            if fill_holes > 0:
+                fD = fill_holes * 2 + 1
+                gamma = cleaned * cleaned
+                kD = np.ones((fD, fD), np.uint8)
+                kE = np.ones((fD + 2, fD + 2), np.uint8)
+                gamma = cv2.dilate(gamma, kD, iterations=1)
+                gamma = cv2.erode(gamma, kE, iterations=1)
+                gamma = cv2.GaussianBlur(gamma, (fD, fD), 0)
+                cleaned = np.maximum(cleaned, gamma)
+
+            i_dup[index] = cleaned
+        
+        return (torch.from_numpy(i_dup),)
+
+
+class AlphaMatte:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "images": ("IMAGE",),
                 "alpha_trimap": ("IMAGE",),
-                "preblur": ("INT", {
-                    "default": 8,
-                    "min": 0,
-                    "max": 256,
-                    "step": 1
-                }),
-                "blackpoint": ("FLOAT", {
-                    "default": 0.01,
-                    "min": 0.0,
-                    "max": 0.99,
-                    "step": 0.01
-                }),
-                "whitepoint": ("FLOAT", {
-                    "default": 0.99,
-                    "min": 0.01,
-                    "max": 1.0,
-                    "step": 0.01
-                }),
-                "max_iterations": ("INT", {
-                    "default": 1000,
-                    "min": 100,
-                    "max": 10000,
-                    "step": 100
-                }),
+                "preblur": ("INT", {"default": 8, "min": 0, "max": 256, "step": 1}),
+                "blackpoint": ("FLOAT", {"default": 0.01, "min": 0.0, "max": 0.99, "step": 0.01}),
+                "whitepoint": ("FLOAT", {"default": 0.99, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "max_iterations": ("INT", {"default": 1000, "min": 100, "max": 10000, "step": 100}),
                 "estimate_fg": (["true", "false"],),
             },
         }
@@ -237,17 +242,16 @@ class AlphaMatte:
     RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE",)
     RETURN_NAMES = ("alpha", "fg", "bg",)
     FUNCTION = "alpha_matte"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
+    DEPRECATED = True
 
     def alpha_matte(self, images, alpha_trimap, preblur, blackpoint, whitepoint, max_iterations, estimate_fg):
-        
         d = preblur * 2 + 1
         
-        i_dup = copy.deepcopy(images.cpu().numpy().astype(np.float64))
-        a_dup = copy.deepcopy(alpha_trimap.cpu().numpy().astype(np.float64))
-        fg = copy.deepcopy(images.cpu().numpy().astype(np.float64))
-        bg = copy.deepcopy(images.cpu().numpy().astype(np.float64))
+        i_dup = images.cpu().numpy().astype(np.float64)
+        a_dup = alpha_trimap.cpu().numpy().astype(np.float64)
+        fg = images.cpu().numpy().astype(np.float64)
+        bg = images.cpu().numpy().astype(np.float64)
         
         
         for index, image in enumerate(i_dup):
@@ -269,6 +273,56 @@ class AlphaMatte:
             torch.from_numpy(bg.astype(np.float32)), # bg
             )
 
+
+class ImageMatting:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "trimap": ("MASK",),
+                "preblur": ("INT", {"default": 8, "min": 0, "max": 256, "step": 1}),
+                "blackpoint": ("FLOAT", {"default": 0.01, "min": 0.0, "max": 0.99, "step": 0.01}),
+                "whitepoint": ("FLOAT", {"default": 0.99, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "max_iterations": ("INT", {"default": 1000, "min": 10, "max": 10000, "step": 10}),
+                "estimate_fg": ("BOOLEAN", {"default": True}),
+            },
+        }
+
+    RETURN_TYPES = ("MASK", "IMAGE", "IMAGE",)
+    RETURN_NAMES = ("matte", "fg", "bg",)
+    FUNCTION = "alpha_matte"
+    CATEGORY = "Image-Filters/image"
+
+    def alpha_matte(self, images, trimap, preblur, blackpoint, whitepoint, max_iterations, estimate_fg):
+        d = preblur * 2 + 1
+        
+        i_dup = images.cpu().numpy().astype(np.float64)
+        a_dup = trimap.cpu().numpy().astype(np.float64)
+        fg = copy.deepcopy(i_dup)
+        bg = copy.deepcopy(i_dup)
+        
+        
+        for index, image in enumerate(i_dup):
+            trimap = a_dup[index]
+            if preblur > 0:
+                trimap = cv2.GaussianBlur(trimap, (d, d), 0)
+            trimap = fix_trimap(trimap, blackpoint, whitepoint)
+            
+            alpha = estimate_alpha_cf(image, trimap, laplacian_kwargs={"epsilon": 1e-6}, cg_kwargs={"maxiter":max_iterations})
+            
+            if estimate_fg:
+                fg[index], bg[index] = estimate_foreground_ml(image, alpha, return_background=True)
+            
+            a_dup[index] = alpha
+        
+        return (
+            torch.from_numpy(a_dup.astype(np.float32)), # matte
+            torch.from_numpy(fg.astype(np.float32)), # fg
+            torch.from_numpy(bg.astype(np.float32)), # bg
+            )
+
+
 class BetterFilmGrain:
     @classmethod
     def INPUT_TYPES(s):
@@ -285,8 +339,7 @@ class BetterFilmGrain:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "grain"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def grain(self, image, scale, strength, saturation, toe, seed):
         t = image.detach().clone()
@@ -308,37 +361,23 @@ class BetterFilmGrain:
         t[:,:,:,:3] = torch.clip((1 - (1 - t[:,:,:,:3]) * grain) * (1 - toe) + toe, 0, 1)
         return(t,)
 
-class BlurImageFast:
-    def __init__(self):
-        pass
 
+class BlurImageFast:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "images": ("IMAGE",),
-                "radius_x": ("INT", {
-                    "default": 1,
-                    "min": 0,
-                    "max": 1023,
-                    "step": 1
-                }),
-                "radius_y": ("INT", {
-                    "default": 1,
-                    "min": 0,
-                    "max": 1023,
-                    "step": 1
-                }),
+                "radius_x": ("INT", {"default": 1, "min": 0, "max": 1023, "step": 1}),
+                "radius_y": ("INT", {"default": 1, "min": 0, "max": 1023, "step": 1}),
             },
         }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "blur_image"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def blur_image(self, images, radius_x, radius_y):
-        
         if radius_x + radius_y == 0:
             return (images,)
         
@@ -352,37 +391,23 @@ class BlurImageFast:
         
         return (torch.from_numpy(dup),)
 
-class BlurMaskFast:
-    def __init__(self):
-        pass
 
+class BlurMaskFast:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "masks": ("MASK",),
-                "radius_x": ("INT", {
-                    "default": 1,
-                    "min": 0,
-                    "max": 1023,
-                    "step": 1
-                }),
-                "radius_y": ("INT", {
-                    "default": 1,
-                    "min": 0,
-                    "max": 1023,
-                    "step": 1
-                }),
+                "radius_x": ("INT", {"default": 1, "min": 0, "max": 1023, "step": 1}),
+                "radius_y": ("INT", {"default": 1, "min": 0, "max": 1023, "step": 1}),
             },
         }
 
     RETURN_TYPES = ("MASK",)
     FUNCTION = "blur_mask"
-
-    CATEGORY = "mask/filters"
+    CATEGORY = "Image-Filters/mask"
 
     def blur_mask(self, masks, radius_x, radius_y):
-        
         if radius_x + radius_y == 0:
             return (masks,)
         
@@ -395,6 +420,7 @@ class BlurMaskFast:
             dup[index] = cv2.GaussianBlur(mask, (dx, dy), 0)
         
         return (torch.from_numpy(dup),)
+
 
 class ColorMatchImage:
     @classmethod
@@ -411,8 +437,7 @@ class ColorMatchImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "batch_normalize"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def batch_normalize(self, images, reference, blur_type, blur_size, factor):
         t = images.detach().clone() + 0.1
@@ -448,6 +473,7 @@ class ColorMatchImage:
         torch.clamp(torch.lerp(images, t, factor), 0, 1)
         return (t,)
 
+
 class RestoreDetail:
     @classmethod
     def INPUT_TYPES(s):
@@ -464,8 +490,7 @@ class RestoreDetail:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "batch_normalize"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def batch_normalize(self, images, detail, mode, blur_type, blur_size, factor):
         t = images.detach().clone() + 0.1
@@ -492,32 +517,23 @@ class RestoreDetail:
         t = torch.clamp(torch.lerp(images, t, factor), 0, 1)
         return (t,)
 
-class DilateErodeMask:
-    def __init__(self):
-        pass
 
+class DilateErodeMask:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "masks": ("MASK",),
-                "radius": ("INT", {
-                    "default": 0,
-                    "min": -1023,
-                    "max": 1023,
-                    "step": 1
-                }),
+                "radius": ("INT", {"default": 0, "min": -1023, "max": 1023, "step": 1}),
                 "shape": (["box", "circle"],),
             },
         }
 
     RETURN_TYPES = ("MASK",)
     FUNCTION = "dilate_mask"
-
-    CATEGORY = "mask/filters"
+    CATEGORY = "Image-Filters/mask"
 
     def dilate_mask(self, masks, radius, shape):
-        
         if radius == 0:
             return (masks,)
         
@@ -539,49 +555,25 @@ class DilateErodeMask:
         
         return (torch.from_numpy(dup),)
 
-class EnhanceDetail:
-    def __init__(self):
-        pass
 
+class EnhanceDetail:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "images": ("IMAGE",),
-                "filter_radius": ("INT", {
-                    "default": 2,
-                    "min": 1,
-                    "max": 64,
-                    "step": 1
-                }),
-                "sigma": ("FLOAT", {
-                    "default": 0.1,
-                    "min": 0.01,
-                    "max": 100.0,
-                    "step": 0.01
-                }),
-                "denoise": ("FLOAT", {
-                    "default": 0.1,
-                    "min": 0.0,
-                    "max": 10.0,
-                    "step": 0.01
-                }),
-                "detail_mult": ("FLOAT", {
-                    "default": 2.0,
-                    "min": 0.0,
-                    "max": 100.0,
-                    "step": 0.1
-                }),
+                "filter_radius": ("INT", {"default": 2, "min": 1, "max": 64, "step": 1}),
+                "sigma": ("FLOAT", {"default": 0.1, "min": 0.01, "max": 100.0, "step": 0.01}),
+                "denoise": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 10.0, "step": 0.01}),
+                "detail_mult": ("FLOAT", {"default": 2.0, "step": 0.01}),
             },
         }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "enhance"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def enhance(self, images: torch.Tensor, filter_radius: int, sigma: float, denoise: float, detail_mult: float):
-        
         if filter_radius == 0:
             return (images,)
         
@@ -593,7 +585,7 @@ class EnhanceDetail:
         
         for index, image in enumerate(dup):
             imgB = image
-            if denoise>0.0:
+            if denoise > 0.0:
                 imgB = cv2.bilateralFilter(image, d, n, d)
             
             imgG = np.clip(guidedFilter(image, image, d, s), 0.001, 1)
@@ -603,50 +595,6 @@ class EnhanceDetail:
         
         return (torch.from_numpy(dup),)
 
-# DEPRECATED: use GuidedFilterImage instead
-class GuidedFilterAlpha:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "images": ("IMAGE",),
-                "alpha": ("IMAGE",),
-                "filter_radius": ("INT", {
-                    "default": 8,
-                    "min": 1,
-                    "max": 64,
-                    "step": 1
-                }),
-                "sigma": ("FLOAT", {
-                    "default": 0.1,
-                    "min": 0.01,
-                    "max": 1.0,
-                    "step": 0.01
-                }),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    FUNCTION = "guided_filter_alpha"
-
-    CATEGORY = "image/filters"
-
-    def guided_filter_alpha(self, images: torch.Tensor, alpha: torch.Tensor, filter_radius: int, sigma: float):
-        
-        d = filter_radius * 2 + 1
-        s = sigma / 10
-        
-        i_dup = copy.deepcopy(images.cpu().numpy())
-        a_dup = copy.deepcopy(alpha.cpu().numpy())
-        
-        for index, image in enumerate(i_dup):
-            alpha_work = a_dup[index]
-            i_dup[index] = guidedFilter(image, alpha_work, d, s)
-        
-        return (torch.from_numpy(i_dup),)
 
 class GuidedFilterImage:
     @classmethod
@@ -662,14 +610,14 @@ class GuidedFilterImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "filter_image"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def filter_image(self, images, guide, size, sigma):
         d = size * 2 + 1
         s = sigma / 10
         filtered = guided_filter_tensor(guide, images, d, s)
         return (filtered,)
+
 
 class MedianFilterImage:
     @classmethod
@@ -683,8 +631,7 @@ class MedianFilterImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "filter_image"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def filter_image(self, images, size):
         np_images = images.detach().clone().cpu().numpy()
@@ -697,6 +644,7 @@ class MedianFilterImage:
             else:
                 np_images[index] = cv2.medianBlur(image, d)
         return (torch.from_numpy(np_images),)
+
 
 class BilateralFilterImage:
     @classmethod
@@ -712,8 +660,7 @@ class BilateralFilterImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "filter_image"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def filter_image(self, images, size, sigma_color, sigma_space):
         np_images = images.detach().clone().cpu().numpy()
@@ -721,6 +668,7 @@ class BilateralFilterImage:
         for index, image in enumerate(np_images):
             np_images[index] = cv2.bilateralFilter(image, d, sigma_color, sigma_space)
         return (torch.from_numpy(np_images),)
+
 
 class FrequencyCombine:
     @classmethod
@@ -736,8 +684,7 @@ class FrequencyCombine:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "filter_image"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def filter_image(self, high_frequency, low_frequency, mode, eps):
         t = low_frequency.detach().clone()
@@ -746,6 +693,7 @@ class FrequencyCombine:
         else:
             t = (high_frequency * 2) * (t + eps) - eps
         return (torch.clamp(t, 0, 1),)
+
 
 class FrequencySeparate:
     @classmethod
@@ -762,8 +710,7 @@ class FrequencySeparate:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("high_frequency",)
     FUNCTION = "filter_image"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def filter_image(self, original, low_frequency, mode, eps):
         t = original.detach().clone()
@@ -773,34 +720,23 @@ class FrequencySeparate:
             t = ((t + eps) / (low_frequency + eps)) * 0.5
         return (t,)
 
+
 class RemapRange:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "image": ("IMAGE",),
-                "blackpoint": ("FLOAT", {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01
-                }),
-                "whitepoint": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.01,
-                    "max": 1.0,
-                    "step": 0.01
-                }),
+                "blackpoint": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "whitepoint": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 1.0, "step": 0.01}),
             },
         }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "remap"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def remap(self, image: torch.Tensor, blackpoint: float, whitepoint: float):
-        
         bp = min(blackpoint, whitepoint - 0.001)
         scale = 1 / (whitepoint - bp)
         
@@ -809,38 +745,30 @@ class RemapRange:
         
         return (torch.from_numpy(i_dup),)
 
+
 class ClampImage:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "image": ("IMAGE",),
-                "blackpoint": ("FLOAT", {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.001
-                }),
-                "whitepoint": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.001
-                }),
+                "blackpoint": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "whitepoint": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001}),
             },
         }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "clamp_image"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def clamp_image(self, image: torch.Tensor, blackpoint: float, whitepoint: float):
         clamped_image = torch.clamp(torch.nan_to_num(image.detach().clone()), min=blackpoint, max=whitepoint)
         return (clamped_image,)
 
+
 Channel_List = ["red", "green", "blue", "alpha", "white", "black"]
 Alpha_List = ["red", "green", "blue", "alpha", "white", "black", "none"]
+
 class ShuffleChannels:
     @classmethod
     def INPUT_TYPES(s):
@@ -856,8 +784,7 @@ class ShuffleChannels:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "shuffle"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def shuffle(self, image, red, green, blue, alpha):
         ch = 3 if alpha == "none" else 4
@@ -882,10 +809,8 @@ class ShuffleChannels:
         
         return(t,)
 
-class ClampOutliers:
-    def __init__(self):
-        pass
 
+class ClampOutliers:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -897,8 +822,7 @@ class ClampOutliers:
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "clamp_outliers"
-
-    CATEGORY = "latent/filters"
+    CATEGORY = "Image-Filters/latent"
 
     def clamp_outliers(self, latents, std_dev):
         latents_copy = copy.deepcopy(latents)
@@ -912,10 +836,8 @@ class ClampOutliers:
         latents_copy["samples"] = t
         return (latents_copy,)
 
-class AdainLatent:
-    def __init__(self):
-        pass
 
+class AdainLatent:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -928,8 +850,7 @@ class AdainLatent:
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "batch_normalize"
-
-    CATEGORY = "latent/filters"
+    CATEGORY = "Image-Filters/latent"
 
     def batch_normalize(self, latents, reference, factor):
         latents_copy = copy.deepcopy(latents)
@@ -946,10 +867,8 @@ class AdainLatent:
         latents_copy["samples"] = torch.lerp(latents["samples"], t.movedim(1,0), factor) # [B x C x H x W]
         return (latents_copy,)
 
-class AdainFilterLatent:
-    def __init__(self):
-        pass
 
+class AdainFilterLatent:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -963,8 +882,7 @@ class AdainFilterLatent:
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "batch_normalize"
-
-    CATEGORY = "latent/filters"
+    CATEGORY = "Image-Filters/latent"
 
     def batch_normalize(self, latents, reference, filter_size, factor):
         latents_copy = copy.deepcopy(latents)
@@ -984,10 +902,8 @@ class AdainFilterLatent:
         latents_copy["samples"] = torch.lerp(latents["samples"], t, factor)
         return (latents_copy,)
 
-class SharpenFilterLatent:
-    def __init__(self):
-        pass
 
+class SharpenFilterLatent:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1000,8 +916,7 @@ class SharpenFilterLatent:
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "filter_latent"
-
-    CATEGORY = "latent/filters"
+    CATEGORY = "Image-Filters/latent"
 
     def filter_latent(self, latents, filter_size, factor):
         latents_copy = copy.deepcopy(latents)
@@ -1018,10 +933,8 @@ class SharpenFilterLatent:
         latents_copy["samples"] = t
         return (latents_copy,)
 
-class AdainImage:
-    def __init__(self):
-        pass
 
+class AdainImage:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1034,8 +947,7 @@ class AdainImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "batch_normalize"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def batch_normalize(self, images, reference, factor):
         t = copy.deepcopy(images) # [B x H x W x C]
@@ -1051,10 +963,8 @@ class AdainImage:
         t = torch.lerp(images, t.movedim(0,-1), factor) # [B x H x W x C]
         return (t,)
 
-class BatchNormalizeLatent:
-    def __init__(self):
-        pass
 
+class BatchNormalizeLatent:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1066,8 +976,7 @@ class BatchNormalizeLatent:
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "batch_normalize"
-
-    CATEGORY = "latent/filters"
+    CATEGORY = "Image-Filters/latent"
 
     def batch_normalize(self, latents, factor):
         latents_copy = copy.deepcopy(latents)
@@ -1079,7 +988,6 @@ class BatchNormalizeLatent:
             
             for i in range(t.size(1)):
                 i_sd, i_mean = torch.std_mean(t[c, i], dim=None)
-                
                 t[c, i] = (t[c, i] - i_mean) / i_sd
             
             t[c] = t[c] * c_sd + c_mean
@@ -1087,10 +995,8 @@ class BatchNormalizeLatent:
         latents_copy["samples"] = torch.lerp(latents["samples"], t.movedim(1,0), factor) # [B x C x H x W]
         return (latents_copy,)
 
-class BatchNormalizeImage:
-    def __init__(self):
-        pass
 
+class BatchNormalizeImage:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1102,8 +1008,7 @@ class BatchNormalizeImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "batch_normalize"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def batch_normalize(self, images, factor):
         t = copy.deepcopy(images) # [B x H x W x C]
@@ -1122,10 +1027,8 @@ class BatchNormalizeImage:
         t = torch.lerp(images, t.movedim(0,-1), factor) # [B x H x W x C]
         return (t,)
 
-class DifferenceChecker:
-    def __init__(self):
-        pass
 
+class DifferenceChecker:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1140,7 +1043,7 @@ class DifferenceChecker:
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "difference_checker"
     OUTPUT_NODE = True
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def difference_checker(self, images1, images2, multiplier, print_MAE):
         t = copy.deepcopy(images1)
@@ -1149,23 +1052,27 @@ class DifferenceChecker:
             print(f"MAE = {torch.mean(t)}")
         return (torch.clamp(t * multiplier, min=0, max=1),)
 
+
 class ImageConstant:
     def __init__(self, device="cpu"):
         self.device = device
 
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
-                              "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
-                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
-                              "red": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                              "green": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                              "blue": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                              }}
+        return {
+            "required": {
+                "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+                "red": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "green": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "blue": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+            },
+        }
+
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "generate"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def generate(self, width, height, batch_size, red, green, blue):
         r = torch.full([batch_size, height, width, 1], red)
@@ -1173,23 +1080,27 @@ class ImageConstant:
         b = torch.full([batch_size, height, width, 1], blue)
         return (torch.cat((r, g, b), dim=-1), )
 
+
 class ImageConstantHSV:
     def __init__(self, device="cpu"):
         self.device = device
 
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
-                              "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
-                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
-                              "hue": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                              "saturation": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                              "value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                              }}
+        return {
+            "required": {
+                "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+                "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+                "hue": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "saturation": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+            },
+        }
+
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "generate"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def generate(self, width, height, batch_size, hue, saturation, value):
         red, green, blue = hsv_to_rgb(hue, saturation, value)
@@ -1199,24 +1110,28 @@ class ImageConstantHSV:
         b = torch.full([batch_size, height, width, 1], blue)
         return (torch.cat((r, g, b), dim=-1), )
 
+
 class OffsetLatentImage:
     def __init__(self):
         self.device = comfy.model_management.intermediate_device()
 
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "width": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8}),
-                              "height": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8}),
-                              "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
-                              "offset_0": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
-                              "offset_1": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
-                              "offset_2": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
-                              "offset_3": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
-                              }}
+        return {
+            "required": {
+                "width": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8}),
+                "height": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8}),
+                "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+                "offset_0": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
+                "offset_1": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
+                "offset_2": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
+                "offset_3": ("FLOAT", {"default": 0.0, "min": -10.0, "max": 10.0, "step": 0.1,  "round": 0.1}),
+            },
+        }
+
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "generate"
-
-    CATEGORY = "latent"
+    CATEGORY = "Image-Filters/latent"
 
     def generate(self, width, height, batch_size, offset_0, offset_1, offset_2, offset_3):
         latent = torch.zeros([batch_size, 4, height // 8, width // 8], device=self.device)
@@ -1225,6 +1140,7 @@ class OffsetLatentImage:
         latent[:,2,:,:] = offset_2
         latent[:,3,:,:] = offset_3
         return ({"samples":latent}, )
+
 
 class RelightSimple:
     @classmethod
@@ -1242,8 +1158,7 @@ class RelightSimple:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "relight"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def relight(self, image, normals, x, y, z, brightness):
         if image.shape[0] != normals.shape[0]:
@@ -1260,6 +1175,7 @@ class RelightSimple:
         relit[:,:,:,:3] = torch.clip(relit[:,:,:,:3] * diffuse * brightness, 0, 1)
         return (relit,)
 
+
 class LatentStats:
     @classmethod
     def INPUT_TYPES(s):
@@ -1269,8 +1185,7 @@ class LatentStats:
     RETURN_NAMES = ("stats", "c0_mean", "c1_mean", "c2_mean", "c3_mean")
     FUNCTION = "notify"
     OUTPUT_NODE = True
-
-    CATEGORY = "utils"
+    CATEGORY = "Image-Filters/utils"
 
     def notify(self, latent):
         latents = latent["samples"]
@@ -1307,6 +1222,7 @@ class LatentStats:
         print(printtext)
         return (returntext, cmean[0], cmean[1], cmean[2], cmean[3])
 
+
 class Tonemap:
     @classmethod
     def INPUT_TYPES(s):
@@ -1321,8 +1237,7 @@ class Tonemap:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "apply"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def apply(self, images, input_mode, output_mode, tonemap_scale):
         t = images.detach().clone().cpu().numpy().astype(np.float32)
@@ -1339,6 +1254,7 @@ class Tonemap:
         t = torch.from_numpy(t)
         return (t,)
 
+
 class UnTonemap:
     @classmethod
     def INPUT_TYPES(s):
@@ -1353,8 +1269,7 @@ class UnTonemap:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "apply"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def apply(self, images, input_mode, output_mode, tonemap_scale):
         t = images.detach().clone().cpu().numpy().astype(np.float32)
@@ -1370,6 +1285,7 @@ class UnTonemap:
         
         t = torch.from_numpy(t)
         return (t,)
+
 
 class ExposureAdjust:
     @classmethod
@@ -1387,8 +1303,7 @@ class ExposureAdjust:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "adjust_exposure"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def adjust_exposure(self, images, stops, input_mode, output_mode, tonemap, tonemap_scale):
         t = images.detach().clone().cpu().numpy().astype(np.float32)
@@ -1416,6 +1331,7 @@ class ExposureAdjust:
         t = torch.from_numpy(t)
         return (t,)
 
+
 # Normal map standard coordinates: +r:+x:right, +g:+y:up, +b:+z:in
 class ConvertNormals:
     @classmethod
@@ -1436,8 +1352,7 @@ class ConvertNormals:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "convert_normals"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def convert_normals(self, normals, input_mode, output_mode, scale_XY, normalize, fix_black, optional_fill=None):
         t = normals.detach().clone()
@@ -1473,6 +1388,7 @@ class ConvertNormals:
         
         return (t,)
 
+
 class BatchAverageImage:
     @classmethod
     def INPUT_TYPES(s):
@@ -1485,8 +1401,7 @@ class BatchAverageImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "apply"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def apply(self, images, operation):
         t = images.detach().clone()
@@ -1495,6 +1410,7 @@ class BatchAverageImage:
         elif operation == "median":
             return (torch.median(t, dim=0, keepdim=True)[0],)
         return(t,)
+
 
 class NormalMapSimple:
     @classmethod
@@ -1508,8 +1424,7 @@ class NormalMapSimple:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "normal_map"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def normal_map(self, images, scale_XY):
         t = images.detach().clone().cpu().numpy().astype(np.float32)
@@ -1522,6 +1437,7 @@ class NormalMapSimple:
         t[:,:,:,:2] *= scale_XY
         t[:,:,:,:3] = F.normalize(t[:,:,:,:3], dim=3) / 2 + 0.5
         return (t,)
+
 
 class DepthToNormals:
     @classmethod
@@ -1537,8 +1453,7 @@ class DepthToNormals:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("normals",)
     FUNCTION = "normal_map"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def normal_map(self, depth, scale, output_mode):
         kernel_x = torch.Tensor([[0,0,0],[1,0,-1],[0,0,0]]).unsqueeze(0).unsqueeze(0).repeat(3, 1, 1, 1)
@@ -1573,6 +1488,7 @@ class DepthToNormals:
         normals = normals.movedim(1, -1) * 0.5 + 0.5 # BHWC
         return (normals,)
 
+
 class Keyer:
     @classmethod
     def INPUT_TYPES(s):
@@ -1590,8 +1506,7 @@ class Keyer:
     RETURN_TYPES = ("IMAGE", "IMAGE", "MASK")
     RETURN_NAMES = ("image", "alpha", "mask")
     FUNCTION = "keyer"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def keyer(self, images, operation, low, high, gamma, premult):
         t = images[:,:,:,:3].detach().clone()
@@ -1635,6 +1550,7 @@ class Keyer:
             t *= alpha
         return (t, alpha, alpha[:,:,:,0])
 
+
 jitter_matrix = torch.Tensor([[[1, 0, 0], [0, 1, 0]], [[1, 0, 1], [0, 1, 0]], [[1, 0, 1], [0, 1, 1]],
                               [[1, 0, 0], [0, 1, 1]], [[1, 0,-1], [0, 1, 1]], [[1, 0,-1], [0, 1, 0]],
                               [[1, 0,-1], [0, 1,-1]], [[1, 0, 0], [0, 1,-1]], [[1, 0, 1], [0, 1,-1]]])
@@ -1651,8 +1567,7 @@ class JitterImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "jitter"
-
-    CATEGORY = "image/filters/jitter"
+    CATEGORY = "Image-Filters/image/jitter"
 
     def jitter(self, images, jitter_scale):
         t = images.detach().clone().movedim(-1,1) # [B x C x H x W]
@@ -1671,6 +1586,7 @@ class JitterImage:
         t = torch.cat(batch, dim=0).movedim(1,-1) # [B x H x W x C]
         return (t,)
 
+
 class UnJitterImage:
     @classmethod
     def INPUT_TYPES(s):
@@ -1684,8 +1600,7 @@ class UnJitterImage:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "jitter"
-
-    CATEGORY = "image/filters/jitter"
+    CATEGORY = "Image-Filters/image/jitter"
 
     def jitter(self, images, jitter_scale, oflow_align):
         t = images.detach().clone().movedim(-1,1) # [B x C x H x W]
@@ -1717,6 +1632,7 @@ class UnJitterImage:
         t = t.movedim(1,-1) # [B x H x W x C]
         return (t,)
 
+
 class BatchAverageUnJittered:
     @classmethod
     def INPUT_TYPES(s):
@@ -1729,8 +1645,7 @@ class BatchAverageUnJittered:
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "apply"
-
-    CATEGORY = "image/filters/jitter"
+    CATEGORY = "Image-Filters/image/jitter"
 
     def apply(self, images, operation):
         t = images.detach().clone()
@@ -1743,6 +1658,7 @@ class BatchAverageUnJittered:
                 batch.append(torch.median(t[i*9:i*9+9], dim=0, keepdim=True)[0])
         
         return (torch.cat(batch, dim=0),)
+
 
 class BatchAlign:
     @classmethod
@@ -1759,8 +1675,7 @@ class BatchAlign:
     RETURN_TYPES = ("IMAGE", "IMAGE")
     RETURN_NAMES = ("aligned", "flow")
     FUNCTION = "apply"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def apply(self, images, ref_frame, direction, blur):
         t = images.detach().clone().movedim(-1,1) # [B x C x H x W]
@@ -1788,22 +1703,25 @@ class BatchAlign:
         f[:,:,:,:2] = flows.movedim(1,-1)
         return (t,f)
 
+
 class InstructPixToPixConditioningAdvanced:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"positive": ("CONDITIONING", ),
-                             "negative": ("CONDITIONING", ),
-                             "new": ("LATENT", ),
-                             "new_scale": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 100.0, "step": 0.01}),
-                             "original": ("LATENT", ),
-                             "original_scale": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 100.0, "step": 0.01}),
-                             }}
+        return {
+            "required": {
+                "positive": ("CONDITIONING", ),
+                "negative": ("CONDITIONING", ),
+                "new": ("LATENT", ),
+                "new_scale": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 100.0, "step": 0.01}),
+                "original": ("LATENT", ),
+                "original_scale": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 100.0, "step": 0.01}),
+            },
+        }
 
     RETURN_TYPES = ("CONDITIONING","CONDITIONING","CONDITIONING","LATENT")
     RETURN_NAMES = ("cond1", "cond2", "negative", "latent")
     FUNCTION = "encode"
-
-    CATEGORY = "conditioning/instructpix2pix"
+    CATEGORY = "Image-Filters/conditioning"
 
     def encode(self, positive, negative, new, new_scale, original, original_scale):
         new_shape, orig_shape = new["samples"].shape, original["samples"].shape
@@ -1823,6 +1741,7 @@ class InstructPixToPixConditioningAdvanced:
             out.append(c)
         return (out[0], out[1], negative, out_latent)
 
+
 class InpaintConditionEncode:
     @classmethod
     def INPUT_TYPES(s):
@@ -1836,7 +1755,7 @@ class InpaintConditionEncode:
     RETURN_TYPES = ("INPAINT_CONDITION",)
     RETURN_NAMES = ("inpaint_condition",)
     FUNCTION = "encode"
-    CATEGORY = "conditioning/inpaint"
+    CATEGORY = "Image-Filters/conditioning"
 
     def encode(self, vae, pixels, mask):
         x = (pixels.shape[1] // 8) * 8
@@ -1859,6 +1778,7 @@ class InpaintConditionEncode:
         
         return ({"concat_latent_image": concat_latent, "concat_mask": mask},)
 
+
 class InpaintConditionApply:
     @classmethod
     def INPUT_TYPES(s):
@@ -1876,8 +1796,7 @@ class InpaintConditionApply:
     RETURN_TYPES = ("CONDITIONING","CONDITIONING","LATENT")
     RETURN_NAMES = ("positive", "negative", "latent")
     FUNCTION = "encode"
-
-    CATEGORY = "conditioning/inpaint"
+    CATEGORY = "Image-Filters/conditioning"
 
     def encode(self, positive, negative, inpaint_condition, noise_mask=True, latents_optional=None):
         concat_latent = inpaint_condition["concat_latent_image"]
@@ -1899,10 +1818,8 @@ class InpaintConditionApply:
             out.append(c)
         return (out[0], out[1], out_latent)
 
-class LatentNormalizeShuffle:
-    def __init__(self):
-        pass
 
+class LatentNormalizeShuffle:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1916,8 +1833,7 @@ class LatentNormalizeShuffle:
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "batch_normalize"
-
-    CATEGORY = "latent/filters"
+    CATEGORY = "Image-Filters/latent"
 
     def batch_normalize(self, latents, flatten, normalize, shuffle):
         latents_copy = copy.deepcopy(latents)
@@ -1945,10 +1861,8 @@ class LatentNormalizeShuffle:
         latents_copy["samples"] = t
         return (latents_copy,)
 
-class RandnLikeLatent:
-    def __init__(self):
-        pass
 
+class RandnLikeLatent:
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1960,8 +1874,7 @@ class RandnLikeLatent:
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "generate"
-
-    CATEGORY = "latent/filters"
+    CATEGORY = "Image-Filters/latent"
 
     def generate(self, latents, seed):
         latents_copy = copy.deepcopy(latents)
@@ -1969,30 +1882,34 @@ class RandnLikeLatent:
         latents_copy["samples"] = randn_like_g(latents_copy["samples"], generator=gen_cpu)
         return (latents_copy,)
 
+
 class PrintSigmas:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {
-            "sigmas": ("SIGMAS",)
-            }}
+        return {
+            "required": {"sigmas": ("SIGMAS",)}
+        }
+
     RETURN_TYPES = ("SIGMAS",)
     FUNCTION = "notify"
     OUTPUT_NODE = True
-    CATEGORY = "utils"
+    CATEGORY = "Image-Filters/utils"
     
     def notify(self, sigmas):
         print(sigmas)
         return (sigmas,)
 
+
 class VisualizeLatents:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"latent": ("LATENT", ),}}
+        return {
+            "required": {"latent": ("LATENT", ),}
+        }
 
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "visualize"
-
-    CATEGORY = "utils"
+    CATEGORY = "Image-Filters/utils"
 
     def visualize(self, latent):
         latents = latent["samples"]
@@ -2015,6 +1932,7 @@ class VisualizeLatents:
         
         return (vis.unsqueeze(-1).repeat(1, 1, 1, 3),)
 
+
 class GameOfLife:
     @classmethod
     def INPUT_TYPES(s):
@@ -2035,12 +1953,9 @@ class GameOfLife:
     RETURN_TYPES = ("IMAGE", "MASK", "MASK", "MASK")
     RETURN_NAMES = ("image", "mask", "off", "on")
     FUNCTION = "game"
-
-    CATEGORY = "image/filters"
+    CATEGORY = "Image-Filters/image"
 
     def game(self, width, height, cell_size, seed, threshold, steps, optional_start=None):
-        F = torch.nn.functional
-        
         if optional_start is None:
             # base random initialization
             torch.manual_seed(seed)
@@ -2099,6 +2014,7 @@ class GameOfLife:
         
         return (image, mask, off, on)
 
+
 modeltest_code_default = """d = model.model.model_config.unet_config
 for k in d.keys():
     print(k, d[k])"""
@@ -2106,31 +2022,37 @@ for k in d.keys():
 class ModelTest:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {
-            "model": ("MODEL",),
-            "code": ("STRING", {"multiline": True, "default": modeltest_code_default}),
-            }}
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "code": ("STRING", {"multiline": True, "default": modeltest_code_default}),
+            },
+        }
+
     RETURN_TYPES = ()
     FUNCTION = "test"
     OUTPUT_NODE = True
-    CATEGORY = "utils"
+    CATEGORY = "Image-Filters/utils"
     
     def test(self, model, code):
         exec(code)
         return ()
 
+
 class ConditioningSubtract:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {
-            "cond_orig": ("CONDITIONING", ),
-            "cond_subtract": ("CONDITIONING", ),
-            "subtract_strength": ("FLOAT", {"default": 1.0, "step": 0.01}),
-            }}
+        return {
+            "required": {
+                "cond_orig": ("CONDITIONING", ),
+                "cond_subtract": ("CONDITIONING", ),
+                "subtract_strength": ("FLOAT", {"default": 1.0, "step": 0.01}),
+            },
+        }
+
     RETURN_TYPES = ("CONDITIONING",)
     FUNCTION = "addWeighted"
-
-    CATEGORY = "conditioning"
+    CATEGORY = "Image-Filters/conditioning"
 
     def addWeighted(self, cond_orig, cond_subtract, subtract_strength):
         out = []
@@ -2159,6 +2081,7 @@ class ConditioningSubtract:
             out.append(n)
         return (out, )
 
+
 class Noise_CustomNoise:
     def __init__(self, noise_latent):
         self.seed = 0
@@ -2167,22 +2090,24 @@ class Noise_CustomNoise:
     def generate_noise(self, input_latent):
         return self.noise_latent.detach().clone().cpu()
 
+
 class CustomNoise:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required":{
-            "noise": ("LATENT",),
-            }}
+        return {
+            "required":{"noise": ("LATENT",),}
+        }
 
     RETURN_TYPES = ("NOISE",)
     FUNCTION = "get_noise"
-    CATEGORY = "sampling/custom_sampling/noise"
+    CATEGORY = "Image-Filters/sampling"
 
     def get_noise(self, noise):
         noise_latent = noise["samples"].detach().clone()
         std, mean = torch.std_mean(noise_latent, dim=(-2, -1), keepdim=True)
         noise_latent = (noise_latent - mean) / std
         return (Noise_CustomNoise(noise_latent),)
+
 
 class ExtractNFrames:
     @classmethod
@@ -2200,8 +2125,7 @@ class ExtractNFrames:
     RETURN_TYPES = ("LIST", "IMAGE", "MASK")
     RETURN_NAMES = ("index_list", "images", "masks")
     FUNCTION = "extract"
-
-    CATEGORY = "image/filters/frames"
+    CATEGORY = "Image-Filters/image/frames"
     
     def extract(self, frames, images=None, masks=None):
         original_length = 2
@@ -2229,6 +2153,7 @@ class ExtractNFrames:
         
         return (ids, torch.stack(new_images, dim=0), torch.stack(new_masks, dim=0))
 
+
 class MergeFramesByIndex:
     @classmethod
     def INPUT_TYPES(s):
@@ -2247,8 +2172,7 @@ class MergeFramesByIndex:
     RETURN_TYPES = ("IMAGE", "MASK")
     RETURN_NAMES = ("images", "masks")
     FUNCTION = "merge"
-
-    CATEGORY = "image/filters/frames"
+    CATEGORY = "Image-Filters/image/frames"
     
     def merge(self, index_list, orig_images, images, orig_masks=None, masks=None):
         new_images = orig_images.detach().clone()
@@ -2265,6 +2189,7 @@ class MergeFramesByIndex:
         
         return (new_images, new_masks)
 
+
 class Hunyuan3Dv2LatentUpscaleBy:
     @classmethod
     def INPUT_TYPES(s):
@@ -2277,13 +2202,14 @@ class Hunyuan3Dv2LatentUpscaleBy:
     
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "upscale"
-    CATEGORY = "latent/filters"
+    CATEGORY = "Image-Filters/latent"
 
     def upscale(self, samples, scale_by):
         s = samples.copy()
         size = round(samples["samples"].shape[-1] * scale_by)
         s["samples"] = F.interpolate(samples["samples"], size=(size,), mode="nearest-exact")
         return (s,)
+
 
 class PackVideoMask:
     @classmethod
@@ -2299,7 +2225,7 @@ class PackVideoMask:
 
     RETURN_TYPES = ("MASK",)
     FUNCTION = "pack_mask"
-    CATEGORY = "mask/filters"
+    CATEGORY = "Image-Filters/mask"
 
     def pack_mask(self, mask, blend_mode, causal, stride):
         packed_mask = mask.detach().clone()
@@ -2360,11 +2286,11 @@ NODE_CLASS_MAPPINGS = {
     "FrequencyCombine": FrequencyCombine,
     "FrequencySeparate": FrequencySeparate,
     "GameOfLife": GameOfLife,
-    "GuidedFilterAlpha": GuidedFilterAlpha,
     "GuidedFilterImage": GuidedFilterImage,
     "Hunyuan3Dv2LatentUpscaleBy": Hunyuan3Dv2LatentUpscaleBy,
     "ImageConstant": ImageConstant,
     "ImageConstantHSV": ImageConstantHSV,
+    "ImageMatting": ImageMatting,
     "InpaintConditionApply": InpaintConditionApply,
     "InpaintConditionEncode": InpaintConditionEncode,
     "InstructPixToPixConditioningAdvanced": InstructPixToPixConditioningAdvanced,
@@ -2373,6 +2299,7 @@ NODE_CLASS_MAPPINGS = {
     "LatentNormalizeShuffle": LatentNormalizeShuffle,
     "RandnLikeLatent": RandnLikeLatent,
     "LatentStats": LatentStats,
+    "MaskClean": MaskClean,
     "MedianFilterImage": MedianFilterImage,
     "MergeFramesByIndex": MergeFramesByIndex,
     "ModelTest": ModelTest,
@@ -2395,8 +2322,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AdainFilterLatent": "AdaIN Filter (Latent)",
     "AdainImage": "AdaIN (Image)",
     "AdainLatent": "AdaIN (Latent)",
-    "AlphaClean": "Alpha Clean",
-    "AlphaMatte": "Alpha Matte",
+    "AlphaClean": "Alpha Clean (DEPRECATED, use MaskClean)",
+    "AlphaMatte": "Alpha Matte (DEPRECATED, use ImageMatting)",
     "BatchAlign": "Batch Align (RAFT)",
     "BatchAverageImage": "Batch Average Image",
     "BatchAverageUnJittered": "Batch Average Un-Jittered",
@@ -2421,11 +2348,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FrequencyCombine": "Frequency Combine",
     "FrequencySeparate": "Frequency Separate",
     "GameOfLife": "Game Of Life",
-    "GuidedFilterAlpha": "(DEPRECATED) Guided Filter Alpha",
     "GuidedFilterImage": "Guided Filter Image",
     "Hunyuan3Dv2LatentUpscaleBy": "Upscale Hunyuan3Dv2 Latent By",
     "ImageConstant": "Image Constant Color (RGB)",
     "ImageConstantHSV": "Image Constant Color (HSV)",
+    "ImageMatting": "Image Matting",
     "InpaintConditionApply": "Inpaint Condition Apply",
     "InpaintConditionEncode": "Inpaint Condition Encode",
     "InstructPixToPixConditioningAdvanced": "InstructPixToPixConditioningAdvanced",
@@ -2434,6 +2361,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LatentNormalizeShuffle": "LatentNormalizeShuffle",
     "RandnLikeLatent": "RandnLikeLatent",
     "LatentStats": "Latent Stats",
+    "MaskClean": "Mask (Alpha) Clean",
     "MedianFilterImage": "Median Filter Image",
     "MergeFramesByIndex": "Merge Frames By Index",
     "ModelTest": "Model Test",
