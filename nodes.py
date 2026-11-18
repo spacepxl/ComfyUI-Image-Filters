@@ -17,6 +17,7 @@ import node_helpers
 from server import PromptServer
 from comfy.utils import ProgressBar
 from comfy_extras.nodes_post_processing import gaussian_kernel
+from comfy_api.latest import io
 from .raft import *
 
 MAX_RESOLUTION=8192
@@ -2341,6 +2342,223 @@ class PoissonNoise:
         return(output,)
 
 
+SAM3TrackData = io.Custom("SAM3_TRACK_DATA")
+
+class MaskToSAM3Track(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id = "MaskToSAM3Track",
+            display_name = "Mask to SAM3 Track",
+            category = "Image-Filters/mask",
+            search_aliases = ["sam3", "video", "track", "propagate", "mask"],
+            inputs = [
+                io.Mask.Input("mask", display_name="mask", tooltip="Mask sequence"),
+            ],
+            outputs = [
+                SAM3TrackData.Output("track_data", display_name="track_data"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, mask) -> io.NodeOutput:
+        from comfy.ldm.sam3.tracker import pack_masks
+        
+        B, H, W = mask.shape
+        
+        packed_mask = pack_masks(
+            (mask > 0.5).to(torch.uint8).unsqueeze(1)
+        )
+        
+        track_data = {
+            "packed_masks": packed_mask,
+            "n_frames": B,
+            "scores": [0.9],
+            "orig_size": (H, W),
+        }
+        
+        return io.NodeOutput(track_data)
+
+
+MHR_face_verts = np.array([9, 18, 110, 149, 174, 178, 256, 259, 262, 349, 672, 711, 753, 899, 998, 1026, 1037, 1235, 1281,
+    1349, 1363, 1397, 1435, 1719, 1856, 1890, 1943, 1954, 1983, 2096, 2110, 2272, 2314, 2321, 2359, 2388, 2394, 2405, 2411,
+    2488, 2518, 2730, 2737, 2751, 2758, 2768, 2772, 2778, 2787, 2794, 2799, 2831, 2834, 2837, 2842, 2895, 2904, 2996, 3035,
+    3060, 3064, 3142, 3145, 3148, 3235, 3558, 3597, 3639, 3785, 3884, 3912, 3923, 4121, 4167, 4235, 4249, 4283, 4321, 4605,
+    4742, 4776, 4829, 4840, 4869, 4982, 4996, 5158, 5200, 5207, 5245, 5274, 5280, 5291, 5297, 5374, 5404], dtype=np.int64)
+
+def mhr_frame_to_crop(frame, H, W, id_idx=0):
+    verts = frame[id_idx]["pred_vertices"]
+    cam_t = frame[id_idx]["pred_cam_t"]
+    focal = frame[id_idx]["focal_length"]
+    
+    verts = np.asarray(verts, dtype=np.float32)
+    cam_t = np.asarray(cam_t, dtype=np.float32).reshape(3)
+    focal = float(np.asarray(focal, dtype=np.float32).reshape(-1)[0])
+    
+    pts3 = verts[MHR_face_verts] + cam_t[None, :]
+    z = np.maximum(pts3[:, 2:3], 1e-6)
+    xy = pts3[:, :2] * focal
+    xy = xy + np.array([W * 0.5, H * 0.5], dtype=np.float32)[None, :] * z
+    verts_2d = (xy / z).astype(np.float32)
+    
+    left = float(min(verts_2d[:, 0]))
+    right = float(max(verts_2d[:, 0]))
+    top = float(min(verts_2d[:, 1]))
+    bottom = float(max(verts_2d[:, 1]))
+    
+    center_x = (right - left) / 2 + left
+    center_y = (bottom - top) / 2 + top
+    size = max(right - left, bottom - top)
+    return (center_x, center_y, size)
+
+MHRPoseData = io.Custom("MHR_POSE_DATA")
+
+class FaceCropSAM3D(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id = "FaceCropSAM3D",
+            display_name = "Face Crop from SAM3D Body",
+            category = "Image-Filters/image",
+            search_aliases = ["sam3d", "crop", "track", "face"],
+            inputs = [
+                io.Image.Input("images"),
+                MHRPoseData.Input("pose_data"),
+                io.Int.Input("width", default=1024, min=1),
+                io.Int.Input("height", default=1024, min=1),
+                io.Float.Input("crop_scale", default=1.3, min=0.01, step=0.01),
+            ],
+            outputs = [
+                io.Image.Output("images"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, images, pose_data, width, height, crop_scale):
+        B, H, W, C = images.shape
+        crops = [mhr_frame_to_crop(frame, H, W) for frame in pose_data["frames"]]
+        
+        images_out = []
+        for idx in range(B):
+            center_x, center_y, size = crops[idx]
+            size = min(size * crop_scale, min(H, W))
+            radius = size / 2
+            
+            center_x = min(max(center_x, radius), W - radius)
+            center_y = min(max(center_y, radius), H - radius)
+            
+            left = max(int(round(center_x - radius)), 0)
+            right = min(int(round(center_x + radius)), W)
+            top = max(int(round(center_y - radius)), 0)
+            bottom = min(int(round(center_y + radius)), H)
+            
+            frame_crop = images[idx, top:bottom, left:right].movedim(-1, 0).unsqueeze(0)
+            frame_crop = F.interpolate(frame_crop, size=(height, width), mode="bilinear")
+            images_out.append(frame_crop.movedim(1, -1))
+        
+        images_out = torch.cat(images_out, dim=0)
+        return io.NodeOutput(images_out)
+
+
+class NukeFaceCropSAM3D(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id = "NukeFaceCropSAM3D",
+            display_name = "Nuke Face Crop from SAM3D Body",
+            category = "Image-Filters/image",
+            search_aliases = ["sam3d", "crop", "track", "face", "nuke"],
+            inputs = [
+                MHRPoseData.Input("pose_data"),
+                io.Float.Input("crop_scale", default=1.3, min=0.01, step=0.01),
+                io.Boolean.Input("overscan", default=False),
+                io.Int.Input("first_frame", default=1001),
+            ],
+            outputs = [
+                io.String.Output("nk"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, pose_data, crop_scale, overscan, first_frame):
+        H, W = pose_data["image_size"]
+        crops = [mhr_frame_to_crop(frame, H, W) for frame in pose_data["frames"]]
+        
+        edges = []
+        for idx in range(len(crops)):
+            center_x, center_y, size = crops[idx]
+            size = min(size * crop_scale, min(H, W))
+            radius = size / 2
+            
+            if overscan:
+                left = center_x - radius
+                right = center_x + radius
+                top = center_y - radius
+                bottom = center_y + radius
+            
+            else:
+                center_x = min(max(center_x, radius), W - radius)
+                center_y = min(max(center_y, radius), H - radius)
+                
+                left = max(center_x - radius, 0)
+                right = min(center_x + radius, W)
+                top = max(center_y - radius, 0)
+                bottom = min(center_y + radius, H)
+            
+            # convert to relative and bottom left origin
+            left = left / W
+            right = right / W
+            top = 1 - top / H
+            bottom = 1 - bottom / H
+            
+            edges.append((left, right, top, bottom))
+        
+        node_text = "set cut_paste_input [stack 0]\n"
+        node_text += "push $cut_paste_input\n"
+        node_text += "CornerPin2D {\n"
+        node_text += " to1 {0 0}\n"
+        node_text += " to2 {1024 0}\n"
+        node_text += " to3 {1024 1024}\n"
+        node_text += " to4 {0 1024}\n"
+        
+        curve_x1 = "\"curve * input.width\" x" + str(first_frame)
+        curve_x2 = curve_x3 = curve_x4 = curve_x1
+        curve_y1 = "\"curve * input.height\" x" + str(first_frame)
+        curve_y2 = curve_y3 = curve_y4 = curve_y1
+        
+        for (left, right, top, bottom) in edges:
+            curve_x1 += f" {left}"
+            curve_y1 += f" {bottom}"
+            
+            curve_x2 += f" {right}"
+            curve_y2 += f" {bottom}"
+            
+            curve_x3 += f" {right}"
+            curve_y3 += f" {top}"
+            
+            curve_x4 += f" {left}"
+            curve_y4 += f" {top}"
+        
+        node_text += " from1 {{" + curve_x1 + "} {" + curve_y1 + "}}\n"
+        node_text += " from2 {{" + curve_x2 + "} {" + curve_y2 + "}}\n"
+        node_text += " from3 {{" + curve_x3 + "} {" + curve_y3 + "}}\n"
+        node_text += " from4 {{" + curve_x4 + "} {" + curve_y4 + "}}\n"
+        
+        node_text += " xpos 0\n"
+        node_text += " ypos 0\n"
+        node_text += "}\n"
+        
+        node_text += "Crop {\n"
+        node_text += " box {0 0 1024 1024}\n"
+        node_text += " reformat true\n"
+        node_text += " crop false\n"
+        node_text += " xpos 0\n"
+        node_text += " ypos 24\n"
+        node_text += "}\n"
+        
+        return io.NodeOutput(node_text)
+
+
 COMBINED_MAPPINGS = {
     "AdainFilterLatent":          (AdainFilterLatent,          "AdaIN Filter (Latent)"),
     "AdainImage":                 (AdainImage,                 "AdaIN (Image)"),
@@ -2368,6 +2586,7 @@ COMBINED_MAPPINGS = {
     "EnhanceDetail":              (EnhanceDetail,              "Enhance Detail"),
     "ExposureAdjust":             (ExposureAdjust,             "Exposure Adjust"),
     "ExtractNFrames":             (ExtractNFrames,             "Extract N Frames"),
+    "FaceCropSAM3D":              (FaceCropSAM3D,              "Face Crop from SAM3D Body"),
     "FrequencyCombine":           (FrequencyCombine,           "Frequency Combine"),
     "FrequencySeparate":          (FrequencySeparate,          "Frequency Separate"),
     "GameOfLife":                 (GameOfLife,                 "Game Of Life"),
@@ -2385,10 +2604,12 @@ COMBINED_MAPPINGS = {
     "RandnLikeLatent":            (RandnLikeLatent,            "RandnLikeLatent"),
     "LatentStats":                (LatentStats,                "Latent Stats"),
     "MaskClean":                  (MaskClean,                  "Mask (Alpha) Clean"),
+    "MaskToSAM3Track":            (MaskToSAM3Track,            "Mask to SAM3 Track"),
     "MedianFilterImage":          (MedianFilterImage,          "Median Filter Image"),
     "MergeFramesByIndex":         (MergeFramesByIndex,         "Merge Frames By Index"),
     "ModelTest":                  (ModelTest,                  "Model Test"),
     "NormalMapSimple":            (NormalMapSimple,            "Normal Map (Simple)"),
+    "NukeFaceCropSAM3D":          (NukeFaceCropSAM3D,          "Nuke Face Crop from SAM3D Body"),
     "OffsetLatentImage":          (OffsetLatentImage,          "Offset Latent Image"),
     "PackVideoMask":              (PackVideoMask,              "Pack Video Mask"),
     "PoissonNoise":               (PoissonNoise,               "Poisson Noise Image"),
