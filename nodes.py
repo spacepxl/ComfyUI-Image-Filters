@@ -2386,7 +2386,12 @@ MHR_face_verts = np.array([9, 18, 110, 149, 174, 178, 256, 259, 262, 349, 672, 7
     3060, 3064, 3142, 3145, 3148, 3235, 3558, 3597, 3639, 3785, 3884, 3912, 3923, 4121, 4167, 4235, 4249, 4283, 4321, 4605,
     4742, 4776, 4829, 4840, 4869, 4982, 4996, 5158, 5200, 5207, 5245, 5274, 5280, 5291, 5297, 5374, 5404], dtype=np.int64)
 
-def mhr_frame_to_crop(frame, H, W, id_idx=0):
+MHR_head_verts = np.array([467, 469, 540, 542, 543, 632, 637, 641, 730, 733, 734, 950, 952, 1621, 1623, 1624, 1736, 1767,
+    1791, 2017, 2019, 2020, 2024, 2035, 2368, 2373, 2425, 2803, 2807, 2810, 2812, 2814, 2816, 2818, 2820, 2823, 2858, 3353,
+    3355, 3426, 3428, 3429, 3518, 3523, 3527, 3616, 3619, 3620, 3836, 3838, 4507, 4509, 4510, 4622, 4653, 4677, 4903, 4905,
+    4906, 4910, 4921, 5254, 5259, 5311, 5615], dtype=np.int64)
+
+def mhr_frame_to_crop(frame, H, W, id_idx=0, full_head=False):
     verts = frame[id_idx]["pred_vertices"]
     cam_t = frame[id_idx]["pred_cam_t"]
     focal = frame[id_idx]["focal_length"]
@@ -2395,7 +2400,12 @@ def mhr_frame_to_crop(frame, H, W, id_idx=0):
     cam_t = np.asarray(cam_t, dtype=np.float32).reshape(3)
     focal = float(np.asarray(focal, dtype=np.float32).reshape(-1)[0])
     
-    pts3 = verts[MHR_face_verts] + cam_t[None, :]
+    if full_head:
+        selected_verts = np.concatenate([MHR_face_verts, MHR_head_verts])
+    else:
+        selected_verts = MHR_face_verts
+    
+    pts3 = verts[selected_verts] + cam_t[None, :]
     z = np.maximum(pts3[:, 2:3], 1e-6)
     xy = pts3[:, :2] * focal
     xy = xy + np.array([W * 0.5, H * 0.5], dtype=np.float32)[None, :] * z
@@ -2424,9 +2434,10 @@ class FaceCropSAM3D(io.ComfyNode):
             inputs = [
                 io.Image.Input("images"),
                 MHRPoseData.Input("pose_data"),
-                io.Int.Input("width", default=1024, min=1),
-                io.Int.Input("height", default=1024, min=1),
-                io.Float.Input("crop_scale", default=1.3, min=0.01, step=0.01),
+                io.Int.Input("width", default=1024, min=1, tooltip="Cropped output width"),
+                io.Int.Input("height", default=1024, min=1, tooltip="Cropped output height"),
+                io.Combo.Input("track_region", options=["face", "head"], default="face", tooltip="Face includes the forehead, ears, and jaw. Head is full skull, no neck."),
+                io.Float.Input("crop_scale", default=1.3, min=0.01, step=0.01, tooltip="Scale the crop window relative to the detected region"),
             ],
             outputs = [
                 io.Image.Output("images"),
@@ -2434,9 +2445,10 @@ class FaceCropSAM3D(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, pose_data, width, height, crop_scale):
+    def execute(cls, images, pose_data, width, height, track_region, crop_scale):
         B, H, W, C = images.shape
-        crops = [mhr_frame_to_crop(frame, H, W) for frame in pose_data["frames"]]
+        full_head = track_region == "head"
+        crops = [mhr_frame_to_crop(frame, H, W, full_head=full_head) for frame in pose_data["frames"]]
         
         images_out = []
         for idx in range(B):
@@ -2470,9 +2482,10 @@ class NukeFaceCropSAM3D(io.ComfyNode):
             search_aliases = ["sam3d", "crop", "track", "face", "nuke"],
             inputs = [
                 MHRPoseData.Input("pose_data"),
-                io.Float.Input("crop_scale", default=1.3, min=0.01, step=0.01),
-                io.Boolean.Input("overscan", default=False),
-                io.Int.Input("first_frame", default=1001),
+                io.Combo.Input("track_region", options=["face", "head"], default="face", tooltip="Face includes the forehead, ears, and jaw. Head is full skull, no neck."),
+                io.Float.Input("crop_scale", default=1.3, min=0.01, step=0.01, tooltip="Scale the crop window relative to the detected region"),
+                io.Boolean.Input("overscan", default=False, tooltip="Allow crop region to go outside format. If false, the crop will be pushed inside the format."),
+                io.Int.Input("first_frame", default=1001, tooltip="Offset the track to start on this frame."),
             ],
             outputs = [
                 io.String.Output("nk"),
@@ -2480,9 +2493,10 @@ class NukeFaceCropSAM3D(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, pose_data, crop_scale, overscan, first_frame):
+    def execute(cls, pose_data, track_region, crop_scale, overscan, first_frame):
         H, W = pose_data["image_size"]
-        crops = [mhr_frame_to_crop(frame, H, W) for frame in pose_data["frames"]]
+        full_head = track_region == "head"
+        crops = [mhr_frame_to_crop(frame, H, W, full_head=full_head) for frame in pose_data["frames"]]
         
         edges = []
         for idx in range(len(crops)):
